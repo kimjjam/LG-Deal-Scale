@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "DirectDesk API"
+    cors_origins: str = "http://localhost:5173"
     database_url: str = "sqlite+aiosqlite:///./directdesk.db"
     database_readonly_url: str | None = None
     database_readonly_password: SecretStr | None = Field(default=None, min_length=16)

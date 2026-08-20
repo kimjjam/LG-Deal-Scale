@@ -1,6 +1,7 @@
 import type { Session } from "./types";
 
 const SESSION_KEY = "directdesk.session.v1";
+const API_BASE_URL = import.meta.env.VITE_API_URL?.replace(/\/$/, "") ?? "";
 
 export function loadSession(): Session | null {
   const stored = window.localStorage.getItem(SESSION_KEY);
@@ -26,7 +27,7 @@ export async function api<T>(
   const headers = new Headers(options.headers);
   if (options.body) headers.set("Content-Type", "application/json");
   if (session) headers.set("Authorization", `Bearer ${session.accessToken}`);
-  const response = await fetch(`/api${path}`, { ...options, headers });
+  const response = await fetch(`${API_BASE_URL}/api${path}`, { ...options, headers });
   if (!response.ok) {
     if (response.status === 401 && session) {
       saveSession(null);
