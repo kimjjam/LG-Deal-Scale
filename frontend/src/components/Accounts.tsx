@@ -177,7 +177,7 @@ export default function Accounts({ session }: { session: Session }) {
                   <th>업체명</th>
                   <th>연락처</th>
                   <th>업종</th>
-                  <th>객실 수</th>
+                  <th>사업 규모</th>
                   <th>등록일</th>
                 </tr>
               </thead>
@@ -201,7 +201,7 @@ export default function Accounts({ session }: { session: Session }) {
                       </td>
                       <td>{account.phone}</td>
                       <td>{String(account.attributes.business_type ?? "-")}</td>
-                      <td>{String(account.attributes.room_count ?? "-")}</td>
+                      <td>{businessScale(account.attributes)}</td>
                       <td>{date(account.created_at)}</td>
                     </tr>
                   ))
@@ -687,6 +687,22 @@ function money(value: string | number | null) {
   return value == null
     ? "금액 미정"
     : `${Number(value).toLocaleString("ko-KR")}원`;
+}
+function businessScale(attributes: Record<string, unknown>) {
+  const scales = [
+    ["room_count", "객실", "개"],
+    ["seat_count", "좌석", "석"],
+    ["employee_count", "직원", "명"],
+    ["store_count", "매장", "개"],
+  ] as const;
+  for (const [key, label, unit] of scales) {
+    const raw = attributes[key];
+    const value = typeof raw === "string" && /^\d+$/.test(raw.trim()) ? Number(raw) : raw;
+    if (typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value <= 100000) {
+      return `${label} ${value}${unit}`;
+    }
+  }
+  return "-";
 }
 function kindLabel(kind: AccountOverview["timeline"][number]["kind"]) {
   return {

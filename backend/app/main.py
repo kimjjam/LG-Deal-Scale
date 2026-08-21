@@ -5,7 +5,7 @@ from slowapi.extension import _rate_limit_exceeded_handler
 from slowapi.middleware import SlowAPIMiddleware
 
 from app.config import get_settings
-from app.routes import accounts, auth, crm, inquiries, outbound, public, search, staff
+from app.routes import accounts, auth, crm, inquiries, outbound, partners, public, search, staff
 from app.routes.public import limiter
 
 app = FastAPI(title=get_settings().app_name)
@@ -30,6 +30,7 @@ for router in (
     inquiries.router,
     search.router,
     outbound.router,
+    partners.router,
     staff.router,
 ):
     app.include_router(router)

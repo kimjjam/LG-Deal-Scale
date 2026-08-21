@@ -14,8 +14,10 @@ def intent_prompt(content: str) -> str:
 def intake_prompt(messages: list[dict[str, str]], fields: dict[str, Any]) -> str:
     return (
         "당신은 가상 가전 공급사 다온비즈의 상담 접수 도우미입니다. 제품 FAQ에 답하지 말고 상담에 필요한 "
-        "업체명, 연락처, 문의내용, 업종, 규모, 필요제품, 수량, 위치를 자연스럽게 한 번에 한두 항목씩 "
-        "물어보세요. 이미 받은 정보는 다시 묻지 마세요. JSON으로 message와 fields를 반환하세요.\n\n"
+        "업체명, 연락처, 문의내용, 업종, 규모, 필요제품, 수량, 위치, 구매 단계, 구매 시기를 자연스럽게 한 번에 "
+        "한두 항목씩 물어보세요. 구매 단계는 견적 요청/모델 비교/정보 수집, 시기는 즉시/1개월 이내/3개월 이내/미정 중 "
+        "하나로 정규화하세요. 규모는 숙박업은 room_count, 음식점·카페는 seat_count, 사무실은 employee_count, "
+        "소매업은 store_count에 양의 정수로 담으세요. 이미 받은 정보는 다시 묻지 마세요. JSON으로 message와 fields를 반환하세요.\n\n"
         f"현재 필드: {json.dumps(fields, ensure_ascii=False)}\n"
         f"대화: {json.dumps(messages, ensure_ascii=False)}"
     )
@@ -23,8 +25,8 @@ def intake_prompt(messages: list[dict[str, str]], fields: dict[str, Any]) -> str
 
 def analysis_prompt(fields: dict[str, Any], products: list[dict[str, Any]]) -> str:
     return (
-        "고객 상황에 맞는 짧은 가전 구매 분석을 한국어로 작성하세요. 제공된 제품 데이터 밖의 사양이나 "
-        "가격을 만들지 말고 경쟁사를 비하하지 마세요. 왜 추천이 상황에 맞는지 설명하세요.\n\n"
+        "고객 상황에 맞는 짧은 가전 구매 분석을 한국어로 작성하세요. 제품 후보는 이미 규칙으로 선별되었으므로 제공된 제품만 "
+        "설명하세요. 제품 데이터 밖의 사양이나 가격을 만들지 말고 경쟁사를 비하하지 마세요. 왜 해당 후보가 상황에 맞는지 설명하세요.\n\n"
         f"고객 상황: {json.dumps(fields, ensure_ascii=False)}\n"
         f"제품 데이터: {json.dumps(products, ensure_ascii=False, default=str)}"
     )

@@ -10,7 +10,6 @@ from app.database import SessionLocal, engine
 from app.models import Account, Inquiry, Lead, Product, Score, Staff
 from app.scoring import INTENT_POINTS, calculate_fit, calculate_total
 from app.security import hash_password
-from app.services import auto_assign
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -36,9 +35,20 @@ async def main() -> None:
                 session.add(Staff(**item, hashed_password=hash_password(password)))
         await session.commit()
         for item in products:
-            if not await session.scalar(
-                select(Product.id).where(Product.product_url == item["product_url"])
-            ):
+            item["price_verified_at"] = date.fromisoformat(item["price_verified_at"])
+            product = await session.scalar(
+                select(Product).where(Product.product_url == item["product_url"])
+            )
+            if product:
+                for field in (
+                    "price_type",
+                    "price_source_url",
+                    "price_verified_at",
+                    "usage_context",
+                    "is_verified",
+                ):
+                    setattr(product, field, item[field])
+            else:
                 session.add(Product(**item))
         await session.commit()
         for item in bundle["accounts"]:
@@ -83,13 +93,16 @@ async def main() -> None:
                     model_name="fixed-json",
                 )
             )
-            await auto_assign(session, inquiry)
         today = datetime.now(timezone.utc).date()
         for item in bundle["leads"]:
             if await session.scalar(select(Lead.id).where(Lead.name == item["name"])):
                 continue
             licensed = date.fromisoformat(item["license_date"])
-            years = today.year - licensed.year - ((today.month, today.day) < (licensed.month, licensed.day))
+            years = (
+                today.year
+                - licensed.year
+                - ((today.month, today.day) < (licensed.month, licensed.day))
+            )
             score, reasoning = lead_score(years, item["business_type"])
             session.add(
                 Lead(

@@ -31,9 +31,18 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection: object) -> None:
-    if connection.dialect.name != "postgresql":
+    sqlite_test_mode = (
+        connection.dialect.name == "sqlite"
+        and config.get_main_option("allow_sqlite_tests") == "true"
+    )
+    if connection.dialect.name != "postgresql" and not sqlite_test_mode:
         raise RuntimeError("Alembic migrations require PostgreSQL.")
-    context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        compare_type=True,
+        render_as_batch=connection.dialect.name == "sqlite",
+    )
     with context.begin_transaction():
         context.run_migrations()
 
@@ -44,9 +53,11 @@ async def run_async_migrations() -> None:
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
-    async with connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations)
-    await connectable.dispose()
+    try:
+        async with connectable.connect() as connection:
+            await connection.run_sync(do_run_migrations)
+    finally:
+        await connectable.dispose()
 
 
 if context.is_offline_mode():

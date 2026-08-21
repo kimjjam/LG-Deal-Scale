@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import record_audit
 from app.database import get_session
-from app.models import Assignment, Inquiry, Staff
+from app.models import Assignment, Inquiry, SalesRegion, Staff
 from app.schemas import (
     StaffActiveUpdate,
     StaffCreate,
@@ -96,6 +96,35 @@ async def require_no_current_unresolved_assignments(
         )
 
 
+async def require_no_active_regions(staff_id: uuid.UUID, session: AsyncSession) -> None:
+    if await session.scalar(
+        select(SalesRegion.id)
+        .where(SalesRegion.manager_id == staff_id, SalesRegion.is_active.is_(True))
+        .limit(1)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="활성 지역 담당 매핑을 다른 매니저에게 변경하거나 비활성화한 후 변경해주세요.",
+        )
+
+
+async def require_no_unresolved_routed_inquiries(
+    staff_id: uuid.UUID, session: AsyncSession
+) -> None:
+    if await session.scalar(
+        select(Inquiry.id)
+        .where(
+            Inquiry.routing_manager_id == staff_id,
+            Inquiry.status.in_(("open", "routed")),
+        )
+        .limit(1)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="담당 중인 미해결 지역 문의를 처리하거나 다른 지역 매니저에게 이관한 후 변경해주세요.",
+        )
+
+
 @router.patch("/{staff_id}/role", response_model=StaffIdentity)
 async def update_staff_role(
     staff_id: uuid.UUID,
@@ -106,6 +135,9 @@ async def update_staff_role(
     staff = await editable_staff(staff_id, session)
     if staff.role == "rep" and payload.role != "rep":
         await require_no_current_unresolved_assignments(staff.id, session)
+    if staff.role == "manager" and payload.role != "manager":
+        await require_no_active_regions(staff.id, session)
+        await require_no_unresolved_routed_inquiries(staff.id, session)
     previous_role = staff.role
     staff.role = payload.role
     record_audit(
@@ -131,6 +163,8 @@ async def update_staff_active(
     staff = await editable_staff(staff_id, session)
     if staff.is_active and not payload.is_active:
         await require_no_current_unresolved_assignments(staff.id, session)
+        await require_no_active_regions(staff.id, session)
+        await require_no_unresolved_routed_inquiries(staff.id, session)
     previous = staff.is_active
     staff.is_active = payload.is_active
     record_audit(

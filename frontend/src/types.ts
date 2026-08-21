@@ -22,9 +22,14 @@ export interface IntakeFields {
   inquiry?: string | null;
   business_type?: string | null;
   room_count?: number | null;
+  seat_count?: number | null;
+  employee_count?: number | null;
+  store_count?: number | null;
   product?: string | null;
   quantity?: number | null;
   location?: string | null;
+  purchase_stage?: "견적 요청" | "모델 비교" | "정보 수집" | null;
+  purchase_timing?: "즉시" | "1개월 이내" | "3개월 이내" | "미정" | null;
 }
 
 export interface ChatTurn {
@@ -37,8 +42,19 @@ export interface ChatTurn {
 export interface ProductRecommendation {
   name: string;
   brand: string;
-  price: number;
+  price: number | null;
+  price_label: string;
+  price_source_url?: string | null;
+  price_verified_at?: string | null;
   product_url: string;
+}
+
+export type NearbyStoreStatus = "location_missing" | "not_configured" | "failed" | "no_results" | "success";
+
+export interface NearbyStoreSearch {
+  status: NearbyStoreStatus;
+  message: string;
+  stores: Array<{ name: string; address: string; phone: string }>;
 }
 
 export interface PublicResult {
@@ -48,6 +64,8 @@ export interface PublicResult {
   analysis_error: boolean;
   products: ProductRecommendation[];
   stores: Array<{ name: string; address: string; phone: string }>;
+  nearby_store_status: NearbyStoreStatus;
+  nearby_store_message: string;
 }
 
 export interface InquiryScore {
@@ -70,7 +88,11 @@ export interface Inquiry {
   created_at: string;
   assignee_id?: string | null;
   assignee_name?: string | null;
+  routing_manager_id?: string | null;
+  routing_manager_name?: string | null;
+  partner?: Partner | null;
   score?: InquiryScore | null;
+  nearby_store_search?: NearbyStoreSearch | null;
 }
 
 export interface Account {
@@ -177,6 +199,27 @@ export interface IntentCorrectionResult {
 export interface AssignmentResult {
   assignment_id: number;
   status: InquiryStatus;
+}
+
+export interface Partner {
+  id: number;
+  name: string;
+  address: string;
+  phone: string | null;
+  region: string;
+  partner_type: string;
+  verification_source: string;
+  verified_at: string;
+  is_active: boolean;
+}
+
+export interface SalesRegion {
+  id: number;
+  region_name: string;
+  match_keyword: string;
+  manager_id: string;
+  manager_name: string;
+  is_active: boolean;
 }
 
 export interface Lead {

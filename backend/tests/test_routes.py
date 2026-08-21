@@ -19,7 +19,7 @@ from app.models import (
     Staff,
 )
 from app.routes import outbound, public, search
-from app.routes.inquiries import inbox
+from app.routes.inquiries import _nearby_store_search_from_raw, inbox
 from app.schemas import (
     ChatMessage,
     ChatTurnRequest,
@@ -42,6 +42,8 @@ class IntakeLLM:
                 business_name="삭제 고객사",
                 phone="010-2222-3333",
                 inquiry="냉장고 문의",
+                purchase_stage="견적 요청",
+                purchase_timing="1개월 이내",
             ),
         )
 
@@ -55,6 +57,27 @@ class SearchLLM:
         if self.fail:
             raise RuntimeError("secret provider detail")
         return self.response
+
+
+def test_nearby_store_raw_parser_preserves_empty_result_and_ignores_legacy_data() -> None:
+    raw: list[object] = [
+        None,
+        {"stores": [{"name": "잘못된 레거시 항목"}]},
+        {
+            "type": "nearby_store_search",
+            "status": "no_results",
+            "message": "검색 결과 없음",
+            "stores": [],
+        },
+    ]
+
+    assert _nearby_store_search_from_raw(raw) == {
+        "status": "no_results",
+        "message": "검색 결과 없음",
+        "stores": [],
+    }
+    assert _nearby_store_search_from_raw({"type": "nearby_store_search"}) is None
+    assert _nearby_store_search_from_raw(42) is None
 
 
 @pytest.mark.asyncio
@@ -83,7 +106,21 @@ async def test_inbox_includes_account_and_latest_assignee_names(session: AsyncSe
     account = Account(name="가상호텔", phone="01022223333", attributes={})
     session.add_all([manager, old_rep, current_rep, account])
     await session.flush()
-    inquiry = Inquiry(account_id=account.id, channel="web", content="객실 냉장고 문의")
+    inquiry = Inquiry(
+        account_id=account.id,
+        channel="web",
+        content="객실 냉장고 문의",
+        raw_conversation=[
+            {
+                "type": "nearby_store_search",
+                "status": "success",
+                "message": "검색 완료",
+                "stores": [
+                    {"name": "다온 전문점", "address": "서울 중구", "phone": "02-123-4567"}
+                ],
+            }
+        ],
+    )
     session.add(inquiry)
     await session.flush()
     now = datetime.now(timezone.utc)
@@ -110,6 +147,40 @@ async def test_inbox_includes_account_and_latest_assignee_names(session: AsyncSe
     assert result[0]["account_name"] == "가상호텔"
     assert result[0]["assignee_id"] == current_rep.id
     assert result[0]["assignee_name"] == "현재 담당자"
+    assert result[0]["nearby_store_search"] == {
+        "status": "success",
+        "message": "검색 완료",
+        "stores": [
+            {"name": "다온 전문점", "address": "서울 중구", "phone": "02-123-4567"}
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_inbox_returns_empty_nearby_stores_for_staff_inquiry(session: AsyncSession) -> None:
+    manager = Staff(
+        id=uuid.uuid4(),
+        name="관리자",
+        email="nearby-manager@example.test",
+        hashed_password="not-used",
+        role="manager",
+    )
+    account = Account(name="가상호텔", phone="01099998888", attributes={})
+    session.add_all([manager, account])
+    await session.flush()
+    session.add(
+        Inquiry(
+            account_id=account.id,
+            channel="staff",
+            content="직원 등록 문의",
+            raw_conversation=[None, {"stores": []}, "legacy"],  # type: ignore[list-item]
+        )
+    )
+    await session.flush()
+
+    result = await inbox(session, manager, scope="all", sort_by="priority")
+
+    assert result[0]["nearby_store_search"] is None
 
 
 @pytest.mark.asyncio
@@ -190,6 +261,9 @@ async def test_public_flow_never_matches_soft_deleted_account(
         business_name="삭제 고객사",
         phone="010-2222-3333",
         inquiry="냉장고 문의",
+        business_type="제조업",
+        purchase_stage="견적 요청",
+        purchase_timing="1개월 이내",
     )
 
     turn = await public.chat.__wrapped__(

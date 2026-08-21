@@ -1,8 +1,10 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -35,7 +37,7 @@ from app.routes.outbound import (
     record_actual_contact,
     stop_sequence,
 )
-from app.routes.public import _relevant_products
+from app.routes.public import _fallback_turn, _intake_complete, _public_price, _relevant_products
 from app.schemas import (
     ChatMessage,
     CsvTextRequest,
@@ -44,6 +46,7 @@ from app.schemas import (
     ManualContactRequest,
     PublicSubmissionRequest,
 )
+from app.scoring import calculate_fit
 
 
 def staff(role: str = "manager") -> Staff:
@@ -189,7 +192,7 @@ async def test_csv_imports_are_atomic_and_exports_exclude_deleted(
 @pytest.mark.asyncio
 async def test_csv_exports_neutralize_formula_cells(session: AsyncSession) -> None:
     manager = staff()
-    account = Account(name="=HYPERLINK(\"bad\")", phone="01011112222", attributes={})
+    account = Account(name='=HYPERLINK("bad")', phone="01011112222", attributes={})
     lead = Lead(
         name="+CMD",
         address="@formula",
@@ -224,9 +227,7 @@ async def test_csv_row_cap_and_rep_export_visibility(session: AsyncSession) -> N
     exported = (await export_accounts(session, rep)).body.decode("utf-8")
     assert "담당 고객" in exported and "비담당 고객" not in exported
 
-    oversized = "name,phone\n" + "\n".join(
-        f"고객{index},010{index:08d}" for index in range(501)
-    )
+    oversized = "name,phone\n" + "\n".join(f"고객{index},010{index:08d}" for index in range(501))
     result = await import_accounts(CsvTextRequest(csv_text=oversized), session, manager)
     assert result["imported_count"] == 0
     assert "500행" in result["errors"][0]["error"]
@@ -239,26 +240,48 @@ async def test_public_product_filter_and_returning_attributes(
     account = Account(
         name="재방문 호텔",
         phone="01022223333",
-        attributes={"room_count": 12, "business_type": "모텔"},
+        attributes={"room_count": 12, "business_type": "모텔", "unrelated": "keep"},
     )
     fridge = Product(
         name="객실 냉장고",
         brand="LG",
         category="냉장고",
         price=Decimal(500000),
+        usage_context="guest_room",
+        is_verified=True,
         product_url="https://example.test/fridge",
+    )
+    competitor = Product(
+        name="타사 객실 냉장고",
+        brand="Competitor",
+        category="냉장고",
+        price=Decimal(450000),
+        usage_context="guest_room",
+        is_verified=True,
+        product_url="https://example.test/competitor-fridge",
+    )
+    side_by_side = Product(
+        name="LG 양문형 냉장고",
+        brand="LG",
+        category="냉장고",
+        price=Decimal(1900000),
+        usage_context="residential_large",
+        is_verified=True,
+        product_url="https://example.test/side-by-side",
     )
     washer = Product(
         name="상업용 세탁기",
         brand="LG",
         category="세탁기",
         price=Decimal(900000),
+        is_verified=True,
         product_url="https://example.test/washer",
     )
-    session.add_all([account, fridge, washer])
+    session.add_all([account, fridge, competitor, side_by_side, washer])
     await session.commit()
     prompts: list[str] = []
     captured_raw: list[object] = []
+    fit_at_creation: list[int] = []
 
     class LLM:
         async def text(self, prompt: str) -> str:
@@ -266,10 +289,20 @@ async def test_public_product_filter_and_returning_attributes(
             return "추천 분석"
 
     async def fake_create_inquiry(
-        session: AsyncSession, account_id: int, channel: str, content: str, raw: object, llm: object
+        session: AsyncSession,
+        account_id: int,
+        channel: str,
+        content: str,
+        raw: object,
+        llm: object,
+        routing_manager_id: object = None,
+        partner_id: int | None = None,
     ) -> tuple[Inquiry, bool]:
-        del channel, llm
+        del channel, llm, routing_manager_id, partner_id
         captured_raw.append(raw)
+        current_account = await session.get(Account, account_id)
+        assert current_account
+        fit_at_creation.append(calculate_fit(current_account.attributes)[0])
         inquiry = Inquiry(account_id=account_id, channel="public_web", content=content)
         session.add(inquiry)
         await session.commit()
@@ -277,7 +310,11 @@ async def test_public_product_filter_and_returning_attributes(
 
     monkeypatch.setattr(public, "get_llm_client", lambda: LLM())
     monkeypatch.setattr(public, "create_inquiry", fake_create_inquiry)
-    monkeypatch.setattr(public, "_nearby_stores", lambda _location: _async_value([]))
+    monkeypatch.setattr(
+        public,
+        "_nearby_stores",
+        lambda _location: _async_value(([], "no_results", "검색 결과 없음")),
+    )
     request = Request({"type": "http", "client": ("127.0.0.1", 1)})
     response = await public.submit.__wrapped__(
         request,
@@ -289,15 +326,190 @@ async def test_public_product_filter_and_returning_attributes(
                 inquiry="객실 냉장고가 필요합니다",
                 product="냉장고 6대",
                 business_type="호텔",
+                room_count=20,
+                purchase_stage="견적 요청",
+                purchase_timing="1개월 이내",
             ),
         ),
         session,
     )
-    assert [item.name for item in response.products] == ["객실 냉장고"]
+    assert [item.name for item in response.products] == ["객실 냉장고", "타사 객실 냉장고"]
+    assert all(item.price is None for item in response.products)
+    assert all(item.price_label == "사업자 가격 상담 필요" for item in response.products)
+    assert "양문형 냉장고" not in prompts[0]
     assert "상업용 세탁기" not in prompts[0]
-    assert account.attributes == {"room_count": 12, "business_type": "모텔"}
+    assert account.attributes == {
+        "room_count": 20,
+        "business_type": "호텔",
+        "unrelated": "keep",
+    }
+    assert fit_at_creation == [60]
     assert response.inquiry_id
+    assert response.nearby_store_status == "no_results"
+    assert response.nearby_store_message == "검색 결과 없음"
     assert captured_raw[0][-1]["type"] == "intake_fields"  # type: ignore[index]
+    stored = await session.get(Inquiry, response.inquiry_id)
+    assert stored and "구매 단계: 견적 요청" in stored.content
+    assert "구매 시기: 1개월 이내" in stored.content
+    assert stored.raw_conversation and stored.raw_conversation[-1] == {
+        "type": "nearby_store_search",
+        "status": "no_results",
+        "message": "검색 결과 없음",
+        "stores": [],
+    }
+
+    async def failed_store_search(_location: str | None) -> object:
+        raise RuntimeError("provider credential detail")
+
+    monkeypatch.setattr(public, "_nearby_stores", failed_store_search)
+    failed_response = await public.submit.__wrapped__(
+        request,
+        PublicSubmissionRequest(
+            messages=[ChatMessage(role="user", content="냉장고 문의")],
+            fields=IntakeFields(
+                business_name="재방문 카페",
+                phone=account.phone,
+                inquiry="카페용 냉장고가 필요합니다",
+                product="냉장고 2대",
+                business_type="카페",
+                seat_count=30,
+                location="서울 중구",
+                purchase_stage="견적 요청",
+                purchase_timing="1개월 이내",
+            ),
+        ),
+        session,
+    )
+    failed_stored = await session.get(Inquiry, failed_response.inquiry_id)
+    assert failed_response.nearby_store_status == "failed"
+    assert "credential" not in failed_response.nearby_store_message
+    assert account.attributes == {
+        "business_type": "카페",
+        "seat_count": 30,
+        "unrelated": "keep",
+    }
+    assert fit_at_creation == [60, 60]
+    assert failed_stored and failed_stored.raw_conversation
+    assert failed_stored.raw_conversation[-1]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_nearby_store_search_reports_missing_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        public,
+        "get_settings",
+        lambda: SimpleNamespace(naver_client_id=None, naver_client_secret=None),
+    )
+
+    stores, status, message = await public._nearby_stores("서울 중구")
+
+    assert stores == []
+    assert status == "not_configured"
+    assert "이용할 수 없습니다" in message
+
+
+@pytest.mark.asyncio
+async def test_nearby_store_search_reports_missing_location(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        public,
+        "get_settings",
+        lambda: SimpleNamespace(naver_client_id=None, naver_client_secret=None),
+    )
+
+    stores, status, message = await public._nearby_stores(None)
+
+    assert stores == []
+    assert status == "location_missing"
+    assert "지역 정보" in message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("items", "expected_status"),
+    [
+        ([], "no_results"),
+        (
+            [
+                None,
+                {
+                    "title": "<b>다온 전문점</b>",
+                    "roadAddress": "서울 중구",
+                    "telephone": "02-123-4567",
+                },
+            ],
+            "success",
+        ),
+    ],
+)
+async def test_nearby_store_search_distinguishes_empty_and_successful_results(
+    monkeypatch: pytest.MonkeyPatch,
+    items: list[object],
+    expected_status: str,
+) -> None:
+    class Client:
+        async def __aenter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def get(self, *_args: object, **_kwargs: object) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"items": items},
+                request=httpx.Request("GET", "https://example.test"),
+            )
+
+    monkeypatch.setattr(
+        public,
+        "get_settings",
+        lambda: SimpleNamespace(naver_client_id="configured", naver_client_secret="configured"),
+    )
+    monkeypatch.setattr(public.httpx, "AsyncClient", lambda **_kwargs: Client())
+
+    stores, status, _message = await public._nearby_stores("서울 중구")
+
+    assert status == expected_status
+    assert stores == (
+        [{"name": "다온 전문점", "address": "서울 중구", "phone": "02-123-4567"}] if items else []
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [{}, {"items": {}}, {"items": [None, {"title": ""}]}])
+async def test_nearby_store_search_rejects_malformed_provider_results(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: object,
+) -> None:
+    class Client:
+        async def __aenter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def get(self, *_args: object, **_kwargs: object) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json=payload,
+                request=httpx.Request("GET", "https://example.test"),
+            )
+
+    monkeypatch.setattr(
+        public,
+        "get_settings",
+        lambda: SimpleNamespace(naver_client_id="configured", naver_client_secret="configured"),
+    )
+    monkeypatch.setattr(public.httpx, "AsyncClient", lambda **_kwargs: Client())
+
+    stores, status, _message = await public._nearby_stores("서울 중구")
+
+    assert stores == []
+    assert status == "failed"
 
 
 async def _async_value(value: object) -> object:
@@ -308,10 +520,123 @@ def test_product_filter_handles_compound_terms_without_catalog_fallback() -> Non
     fridge = Product(name="객실 냉장고", brand="LG", category="냉장고", price=1, product_url="x")
     washer = Product(name="상업용 세탁기", brand="LG", category="세탁기", price=1, product_url="x")
     products = [fridge, washer]
-    assert _relevant_products(
-        products, IntakeFields(inquiry="냉장고와 세탁기가 필요합니다")
-    ) == products
+    assert (
+        _relevant_products(products, IntakeFields(inquiry="냉장고와 세탁기가 필요합니다"))
+        == products
+    )
     assert _relevant_products(products, IntakeFields(inquiry="에어컨 문의")) == []
+
+
+@pytest.mark.parametrize(
+    "business_type",
+    ["숙박업", "호텔업", "관광호텔", "리조트", "  모텔  "],
+)
+def test_lodging_fridge_filter_rejects_large_residential_models(
+    business_type: str,
+) -> None:
+    guest_room = Product(
+        name="객실용 소형 냉장고",
+        brand="LG",
+        category="냉장고",
+        price=1,
+        usage_context="guest_room",
+        product_url="guest",
+    )
+    side_by_side = Product(
+        name="양문형 냉장고",
+        brand="LG",
+        category="냉장고",
+        price=1,
+        usage_context="residential_large",
+        product_url="large",
+    )
+    assert _relevant_products(
+        [guest_room, side_by_side],
+        IntakeFields(business_type=business_type, inquiry="객실 냉장고 6대 필요"),
+    ) == [guest_room]
+
+
+def test_intake_requires_purchase_stage_and_timing() -> None:
+    base = {
+        "business_name": "가상 모텔",
+        "phone": "01012345678",
+        "inquiry": "객실 냉장고 견적",
+    }
+    assert not _intake_complete(IntakeFields(**base))
+    complete = {**base, "purchase_stage": "견적 요청", "purchase_timing": "즉시"}
+    assert not _intake_complete(IntakeFields(**complete, business_type="호텔"))
+    assert _intake_complete(IntakeFields(**complete, business_type="호텔", room_count=12))
+    assert _intake_complete(IntakeFields(**complete, business_type="제조업"))
+
+
+@pytest.mark.parametrize(
+    ("business_type", "field"),
+    [
+        ("호텔", "room_count"),
+        ("카페", "seat_count"),
+        ("사무실", "employee_count"),
+        ("소매업", "store_count"),
+    ],
+)
+def test_supported_industry_requires_its_scale(business_type: str, field: str) -> None:
+    base = {
+        "business_name": "가상 업체",
+        "phone": "01012345678",
+        "inquiry": "가전 견적",
+        "business_type": business_type,
+        "purchase_stage": "견적 요청",
+        "purchase_timing": "즉시",
+    }
+    assert not _intake_complete(IntakeFields(**base))
+    assert _intake_complete(IntakeFields(**base, **{field: 10}))
+
+
+def test_fallback_finishes_required_questions_before_optional_questions() -> None:
+    fields = IntakeFields()
+    steps = [
+        ("업체명을", {"business_name": "가상 모텔"}),
+        ("전화번호를", {"phone": "01012345678"}),
+        ("제품이 얼마나", {"inquiry": "냉장고 6대 견적"}),
+        ("견적 요청", {"purchase_stage": "견적 요청"}),
+        ("구매 시기", {"purchase_timing": "1개월 이내"}),
+        ("업종", {"business_type": "카페"}),
+        ("좌석", {"seat_count": 30}),
+    ]
+    for expected, update in steps:
+        assert expected in _fallback_turn(fields).message
+        fields = fields.model_copy(update=update)
+    assert _intake_complete(fields)
+    assert "버튼" in _fallback_turn(fields).message
+    assert "담당자에게 전달" in _fallback_turn(fields).message
+
+
+def test_wholesale_price_requires_its_own_source_and_verification_date() -> None:
+    product = Product(
+        name="객실용 냉장고",
+        brand="LG",
+        category="냉장고",
+        price=Decimal(400000),
+        price_type="wholesale",
+        is_verified=True,
+        product_url="https://example.test/product",
+    )
+    assert _public_price(product) == (None, "사업자 가격 상담 필요")
+    product.price_source_url = "https://example.test/wholesale-quote"
+    assert _public_price(product) == (None, "사업자 가격 상담 필요")
+    product.price_verified_at = datetime.now(timezone.utc).date()
+    assert _public_price(product) == (400000.0, "사업자 가격 400,000원")
+
+
+def test_product_metadata_migration_does_not_guess_unknown_fridge_usage() -> None:
+    migration = (
+        Path(__file__).parents[1]
+        / "alembic"
+        / "versions"
+        / "0004_product_recommendation_metadata.py"
+    ).read_text(encoding="utf-8")
+    assert "WHEN category = '냉장고'" not in migration
+    assert "%/s834mee111" in migration
+    assert "%/RS84DB5002CW/" in migration
 
 
 @pytest.mark.asyncio

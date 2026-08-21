@@ -24,6 +24,7 @@ from app.models import (
     Product,
     Staff,
 )
+from app.product_pricing import trusted_business_price
 from app.prompts import outbound_prompt
 from app.schemas import (
     CsvTextRequest,
@@ -366,9 +367,18 @@ async def generate_draft(lead_id: int, session: Session, staff: ManagerStaff) ->
     if sequence_step > 3:
         raise HTTPException(status_code=409, detail="시퀀스는 최대 3단계입니다.")
     if previous and (previous.reviewed_by is None or previous.sent_at is None):
-        raise HTTPException(status_code=409, detail="이전 초안을 검토하고 발송 처리한 뒤 진행해주세요.")
+        raise HTTPException(
+            status_code=409, detail="이전 초안을 검토하고 발송 처리한 뒤 진행해주세요."
+        )
     products = list(
-        (await session.scalars(select(Product).where(Product.brand == "LG").limit(5))).all()
+        (
+            await session.scalars(
+                select(Product)
+                .where(Product.brand == "LG", Product.is_verified.is_(True))
+                .order_by(Product.id)
+                .limit(5)
+            )
+        ).all()
     )
     try:
         result = await get_llm_client().structured(
@@ -380,7 +390,11 @@ async def generate_draft(lead_id: int, session: Session, staff: ManagerStaff) ->
                     "lead_score_reasoning": lead.lead_score_reasoning,
                 },
                 [
-                    {"name": product.name, "category": product.category, "price": str(product.price)}
+                    {
+                        "name": product.name,
+                        "category": product.category,
+                        "business_price": trusted_business_price(product)[1],
+                    }
                     for product in products
                 ],
                 sequence_step,

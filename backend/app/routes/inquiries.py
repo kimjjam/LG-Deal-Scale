@@ -15,6 +15,7 @@ from app.models import (
     Inquiry,
     Opportunity,
     OpportunityStageHistory,
+    Partner,
     Score,
     Staff,
 )
@@ -26,13 +27,43 @@ from app.schemas import (
     IntentCorrectionRequest,
     ManualAssignmentRequest,
     OpportunityResponse,
+    PartnerLinkRequest,
 )
 from app.scoring import INTENT_POINTS, calculate_total
 from app.security import CurrentStaff, ManagerStaff
-from app.services import create_inquiry, manually_assign, score_inquiry
+from app.services import claim_inquiry, create_inquiry, manually_assign, score_inquiry
 
 router = APIRouter(prefix="/api/inquiries", tags=["inquiries"])
 Session = Annotated[AsyncSession, Depends(get_session)]
+
+
+def _nearby_store_search_from_raw(raw: object | None) -> dict[str, object] | None:
+    if not isinstance(raw, list):
+        return None
+    for entry in reversed(raw):
+        if not isinstance(entry, dict) or entry.get("type") != "nearby_store_search":
+            continue
+        status = entry.get("status")
+        message = entry.get("message")
+        stores = entry.get("stores")
+        if (
+            status not in {"location_missing", "not_configured", "failed", "no_results", "success"}
+            or not isinstance(message, str)
+            or not isinstance(stores, list)
+        ):
+            return None
+        valid_stores = [
+            {
+                "name": store.get("name", ""),
+                "address": store.get("address", ""),
+                "phone": store.get("phone", ""),
+            }
+            for store in stores
+            if isinstance(store, dict)
+            and all(isinstance(store.get(field, ""), str) for field in ("name", "address", "phone"))
+        ]
+        return {"status": status, "message": message, "stores": valid_stores}
+    return None
 
 
 async def _require_inquiry_access(session: AsyncSession, inquiry: Inquiry, staff: Staff) -> None:
@@ -64,7 +95,7 @@ async def create(payload: InquiryCreate, session: Session, _staff: CurrentStaff)
 async def inbox(
     session: Session,
     staff: CurrentStaff,
-    scope: Literal["mine", "all"] | None = None,
+    scope: Literal["unassigned", "mine", "my_region", "all"] | None = None,
     sort_by: Literal["priority", "latest"] = "priority",
     q: str | None = None,
     inquiry_status: Annotated[
@@ -74,7 +105,11 @@ async def inbox(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[dict[str, object]]:
-    selected_scope = scope or ("all" if staff.role in ("owner", "manager") else "mine")
+    selected_scope = scope or ("all" if staff.role in ("owner", "manager") else "unassigned")
+    if selected_scope == "my_region" and staff.role != "manager":
+        raise HTTPException(status_code=403, detail="지역 문의 범위는 매니저만 볼 수 있습니다.")
+    if staff.role == "rep" and assignee_id not in {None, staff.id}:
+        raise HTTPException(status_code=403, detail="다른 담당자의 문의는 조회할 수 없습니다.")
     current_assignee = (
         select(Assignment.assignee_id)
         .where(Assignment.inquiry_id == Inquiry.id)
@@ -92,20 +127,33 @@ async def inbox(
         .correlate(Inquiry)
         .scalar_subquery()
     )
+    routing_manager_name = (
+        select(Staff.name)
+        .where(Staff.id == Inquiry.routing_manager_id)
+        .correlate(Inquiry)
+        .scalar_subquery()
+    )
     statement = (
         select(
             Inquiry,
             Score,
+            Partner,
             current_assignee.label("assignee_id"),
             Account.name.label("account_name"),
             current_assignee_name.label("assignee_name"),
+            routing_manager_name.label("routing_manager_name"),
         )
         .join(Account, Account.id == Inquiry.account_id)
         .outerjoin(Score, Score.inquiry_id == Inquiry.id)
+        .outerjoin(Partner, Partner.id == Inquiry.partner_id)
         .where(Account.deleted_at.is_(None))
     )
     if selected_scope == "mine":
         statement = statement.where(current_assignee == staff.id)
+    elif selected_scope == "unassigned":
+        statement = statement.where(current_assignee.is_(None), Inquiry.status == "open")
+    elif selected_scope == "my_region":
+        statement = statement.where(Inquiry.routing_manager_id == staff.id)
     if q:
         statement = statement.where(
             or_(Inquiry.content.ilike(f"%{q}%"), Account.name.ilike(f"%{q}%"))
@@ -133,6 +181,22 @@ async def inbox(
             "created_at": inquiry.created_at,
             "assignee_id": assignee_id,
             "assignee_name": assignee_name,
+            "routing_manager_id": inquiry.routing_manager_id,
+            "routing_manager_name": routing_manager_name,
+            "partner": None
+            if partner is None
+            else {
+                "id": partner.id,
+                "name": partner.name,
+                "address": partner.address,
+                "phone": partner.phone,
+                "region": partner.region,
+                "partner_type": partner.partner_type,
+                "verification_source": partner.verification_source,
+                "verified_at": partner.verified_at,
+                "is_active": partner.is_active,
+            },
+            "nearby_store_search": _nearby_store_search_from_raw(inquiry.raw_conversation),
             "score": None
             if score is None
             else {
@@ -145,12 +209,16 @@ async def inbox(
                 "reasoning": score.reasoning,
             },
         }
-        for inquiry, score, assignee_id, account_name, assignee_name in rows
+        for inquiry, score, partner, assignee_id, account_name, assignee_name, routing_manager_name in rows
     ]
 
 
 @router.post("/{inquiry_id}/score")
 async def retry_score(inquiry_id: int, session: Session, staff: CurrentStaff) -> dict[str, object]:
+    inquiry = await session.get(Inquiry, inquiry_id)
+    if not inquiry:
+        raise HTTPException(status_code=404, detail="문의를 찾을 수 없습니다.")
+    await _require_inquiry_access(session, inquiry, staff)
     try:
         score = await score_inquiry(session, inquiry_id, get_llm_client())
     except ValueError as error:
@@ -184,6 +252,54 @@ async def reassign(
     )
     await session.commit()
     return {"assignment_id": assignment.id, "status": inquiry.status}
+
+
+@router.post("/{inquiry_id}/claim")
+async def claim(inquiry_id: int, session: Session, staff: CurrentStaff) -> dict[str, object]:
+    try:
+        inquiry, assignment = await claim_inquiry(session, inquiry_id, staff)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    record_audit(
+        session,
+        staff,
+        "inquiry.claim",
+        "inquiry",
+        inquiry.id,
+        {"assignee_id": str(staff.id)},
+    )
+    await session.commit()
+    return {"assignment_id": assignment.id, "status": inquiry.status}
+
+
+@router.patch("/{inquiry_id}/partner")
+async def link_partner(
+    inquiry_id: int,
+    payload: PartnerLinkRequest,
+    session: Session,
+    manager: ManagerStaff,
+) -> dict[str, object]:
+    inquiry = await session.get(Inquiry, inquiry_id)
+    if not inquiry:
+        raise HTTPException(status_code=404, detail="문의를 찾을 수 없습니다.")
+    partner = await session.get(Partner, payload.partner_id) if payload.partner_id else None
+    if payload.partner_id and (not partner or not partner.is_active):
+        raise HTTPException(status_code=404, detail="활성 검증 파트너를 찾을 수 없습니다.")
+    inquiry.partner_id = partner.id if partner else None
+    record_audit(
+        session,
+        manager,
+        "inquiry.partner_link",
+        "inquiry",
+        inquiry.id,
+        {"partner_id": inquiry.partner_id},
+    )
+    await session.commit()
+    return {"inquiry_id": inquiry.id, "partner_id": inquiry.partner_id}
 
 
 @router.patch("/{inquiry_id}/status", response_model=InquiryResponse)

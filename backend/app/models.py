@@ -5,6 +5,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -65,6 +66,12 @@ class Inquiry(Base):
     channel: Mapped[str] = mapped_column(String(30), default="web")
     content: Mapped[str] = mapped_column(Text)
     raw_conversation: Mapped[list[dict[str, Any]] | None] = mapped_column(JsonType)
+    routing_manager_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("staff.id", ondelete="SET NULL"), index=True
+    )
+    partner_id: Mapped[int | None] = mapped_column(
+        ForeignKey("partners.id", ondelete="SET NULL"), index=True
+    )
     status: Mapped[str] = mapped_column(String(20), default="open", index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True
@@ -135,7 +142,9 @@ class Staff(Base):
 class Assignment(Base):
     __tablename__ = "assignments"
     __table_args__ = (
-        CheckConstraint("method IN ('round_robin', 'manual')", name="ck_assignment_method"),
+        CheckConstraint(
+            "method IN ('round_robin', 'manual', 'claimed')", name="ck_assignment_method"
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -147,6 +156,32 @@ class Assignment(Base):
         DateTime(timezone=True), default=utcnow, index=True
     )
     method: Mapped[str] = mapped_column(String(20))
+
+
+class SalesRegion(Base):
+    __tablename__ = "sales_regions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    region_name: Mapped[str] = mapped_column(String(100))
+    match_keyword: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    manager_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("staff.id"), index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Partner(Base):
+    __tablename__ = "partners"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    address: Mapped[str] = mapped_column(String(500))
+    phone: Mapped[str | None] = mapped_column(String(30))
+    region: Mapped[str] = mapped_column(String(100), index=True)
+    partner_type: Mapped[str] = mapped_column(String(50))
+    verification_source: Mapped[str] = mapped_column(String(200))
+    verified_at: Mapped[date] = mapped_column(Date)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class Opportunity(Base):
@@ -297,11 +332,17 @@ class OutboundDraft(Base):
 
 class Product(Base):
     __tablename__ = "products"
+    __table_args__ = (CheckConstraint("price > 0", name="ck_product_price_positive"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(200))
     brand: Mapped[str] = mapped_column(String(100), index=True)
     category: Mapped[str] = mapped_column(String(100), index=True)
     price: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    price_type: Mapped[str] = mapped_column(String(30), default="retail_reference")
+    price_source_url: Mapped[str | None] = mapped_column(String(1000))
+    price_verified_at: Mapped[date | None] = mapped_column(Date)
+    usage_context: Mapped[str | None] = mapped_column(String(50))
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     product_url: Mapped[str] = mapped_column(String(1000))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

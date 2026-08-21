@@ -8,11 +8,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.models import Account, Assignment, Inquiry, Opportunity, Staff, Task
+from app.models import Account, Inquiry, Opportunity, Staff, Task
 from app.nl2sql import UnsafeQueryError, validate_sql
 from app.routes.accounts import create_account
 from app.schemas import AccountCreate, IntakeFields, IntentResult, normalize_phone
-from app.services import auto_assign, classify_intent, create_inquiry
+from app.services import classify_intent, create_inquiry
 
 
 class RecordingLLM:
@@ -54,69 +54,6 @@ def test_readonly_url_is_derived_from_password() -> None:
     )
 
 
-@pytest.mark.asyncio
-async def test_existing_open_account_inquiry_keeps_assignee(session: AsyncSession) -> None:
-    rep = Staff(
-        id=uuid.uuid4(),
-        name="담당자",
-        email="rep@example.test",
-        hashed_password="not-used",
-        role="rep",
-    )
-    account = Account(name="가상호텔", phone="01000000000", attributes={})
-    session.add_all([rep, account])
-    await session.flush()
-    prior = Inquiry(account_id=account.id, channel="web", content="이전 문의", status="routed")
-    current = Inquiry(account_id=account.id, channel="web", content="새 문의")
-    session.add_all([prior, current])
-    await session.flush()
-    session.add(Assignment(inquiry_id=prior.id, assignee_id=rep.id, method="round_robin"))
-    await session.flush()
-
-    assignment = await auto_assign(session, current)
-
-    assert assignment.assignee_id == rep.id
-
-
-@pytest.mark.asyncio
-async def test_auto_assign_falls_back_when_latest_prior_assignee_is_inactive(
-    session: AsyncSession,
-) -> None:
-    active = Staff(
-        id=uuid.uuid4(),
-        name="활성 담당자",
-        email="active-fallback@example.test",
-        hashed_password="not-used",
-        role="rep",
-    )
-    inactive = Staff(
-        id=uuid.uuid4(),
-        name="비활성 담당자",
-        email="inactive-fallback@example.test",
-        hashed_password="not-used",
-        role="rep",
-        is_active=False,
-    )
-    account = Account(name="배정 테스트", phone="01000000001", attributes={})
-    session.add_all([active, inactive, account])
-    await session.flush()
-    prior = Inquiry(account_id=account.id, channel="web", content="이전", status="routed")
-    current = Inquiry(account_id=account.id, channel="web", content="현재")
-    session.add_all([prior, current])
-    await session.flush()
-    session.add_all(
-        [
-            Assignment(inquiry_id=prior.id, assignee_id=active.id, method="manual"),
-            Assignment(inquiry_id=prior.id, assignee_id=inactive.id, method="manual"),
-        ]
-    )
-    await session.flush()
-
-    assignment = await auto_assign(session, current)
-
-    assert assignment.assignee_id == active.id
-
-
 @pytest.mark.parametrize(
     "sql",
     [
@@ -142,6 +79,22 @@ def test_phone_normalization() -> None:
     assert IntakeFields(phone="010 9876 5432").phone == "01098765432"
     with pytest.raises(ValueError):
         normalize_phone("12-34")
+
+
+@pytest.mark.parametrize(
+    "field", ["room_count", "seat_count", "employee_count", "store_count", "quantity"]
+)
+def test_intake_counts_reject_booleans(field: str) -> None:
+    with pytest.raises(ValueError):
+        IntakeFields(**{field: True})
+    assert getattr(IntakeFields(**{field: "12"}), field) == 12
+
+
+@pytest.mark.parametrize("field", ["business_name", "inquiry", "business_type"])
+def test_intake_required_text_strips_and_rejects_blank(field: str) -> None:
+    with pytest.raises(ValueError):
+        IntakeFields(**{field: "   "})
+    assert getattr(IntakeFields(**{field: "  값  "}), field) == "값"
 
 
 def test_migration_checks_phone_length_before_normalizing() -> None:

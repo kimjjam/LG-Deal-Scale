@@ -1,14 +1,24 @@
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import exists, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.llm import LLMClient
-from app.models import Account, Assignment, Inquiry, Interaction, Score, Staff, utcnow
+from app.models import (
+    Account,
+    Assignment,
+    Inquiry,
+    Interaction,
+    Partner,
+    SalesRegion,
+    Score,
+    Staff,
+    utcnow,
+)
 from app.prompts import intent_prompt
-from app.schemas import IntentResult
+from app.schemas import IntentResult, normalize_region_text
 from app.scoring import INTENT_POINTS, calculate_fit, calculate_recency, calculate_total
 
 
@@ -49,7 +59,7 @@ async def score_inquiry(session: AsyncSession, inquiry_id: int, llm: LLMClient) 
             "intent": intent.reasoning,
             "recency": recency_reason,
         },
-        "scoring_version": "v1",
+        "scoring_version": "v2",
         "llm_provider": llm.provider,
         "model_name": llm.model,
         "updated_at": utcnow(),
@@ -80,67 +90,6 @@ async def score_inquiry(session: AsyncSession, inquiry_id: int, llm: LLMClient) 
     return score
 
 
-async def auto_assign(session: AsyncSession, inquiry: Inquiry) -> Assignment:
-    prior_inquiry_id = await session.scalar(
-        select(Inquiry.id)
-        .where(
-            Inquiry.account_id == inquiry.account_id,
-            Inquiry.id != inquiry.id,
-            Inquiry.status.in_(("open", "routed")),
-        )
-        .order_by(Inquiry.created_at.desc())
-        .limit(1)
-    )
-    assignee_id: uuid.UUID | None = None
-    if prior_inquiry_id:
-        prior_assignee_id = await session.scalar(
-            select(Assignment.assignee_id)
-            .where(Assignment.inquiry_id == prior_inquiry_id)
-            .order_by(Assignment.assigned_at.desc(), Assignment.id.desc())
-            .limit(1)
-        )
-        if prior_assignee_id:
-            assignee_id = await session.scalar(
-                select(Staff.id).where(
-                    Staff.id == prior_assignee_id,
-                    Staff.role == "rep",
-                    Staff.is_active.is_(True),
-                )
-            )
-    if assignee_id is None:
-        reps = list(
-            (
-                await session.scalars(
-                    select(Staff)
-                    .where(Staff.role == "rep", Staff.is_active.is_(True))
-                    .order_by(Staff.email)
-                    .with_for_update()
-                )
-            ).all()
-        )
-        if not reps:
-            raise RuntimeError("No sales representatives available")
-        last_assignee = await session.scalar(
-            select(Assignment.assignee_id)
-            .join(Staff, Staff.id == Assignment.assignee_id)
-            .where(
-                Staff.role == "rep",
-                Staff.is_active.is_(True),
-                Assignment.method == "round_robin",
-            )
-            .order_by(Assignment.assigned_at.desc(), Assignment.id.desc())
-            .limit(1)
-        )
-        rep_ids = [rep.id for rep in reps]
-        index = (rep_ids.index(last_assignee) + 1) % len(rep_ids) if last_assignee in rep_ids else 0
-        assignee_id = rep_ids[index]
-    assignment = Assignment(inquiry_id=inquiry.id, assignee_id=assignee_id, method="round_robin")
-    inquiry.status = "routed"
-    session.add(assignment)
-    await session.flush()
-    return assignment
-
-
 async def manually_assign(
     session: AsyncSession, inquiry: Inquiry, assignee_id: uuid.UUID
 ) -> Assignment:
@@ -154,6 +103,77 @@ async def manually_assign(
     return assignment
 
 
+async def claim_inquiry(
+    session: AsyncSession, inquiry_id: int, staff: Staff
+) -> tuple[Inquiry, Assignment]:
+    if staff.role != "rep" or not staff.is_active:
+        raise PermissionError("활성 영업 담당자만 문의를 담당할 수 있습니다.")
+    transition = await session.execute(
+        update(Inquiry)
+        .where(
+            Inquiry.id == inquiry_id,
+            Inquiry.status == "open",
+            ~exists().where(Assignment.inquiry_id == Inquiry.id),
+        )
+        .values(status="routed")
+    )
+    if transition.rowcount != 1:
+        if not await session.get(Inquiry, inquiry_id):
+            raise ValueError("문의를 찾을 수 없습니다.")
+        raise RuntimeError("이미 담당자가 지정된 문의입니다.")
+    inquiry = await session.get(Inquiry, inquiry_id)
+    if not inquiry:
+        raise ValueError("문의를 찾을 수 없습니다.")
+    assignment = Assignment(inquiry_id=inquiry_id, assignee_id=staff.id, method="claimed")
+    session.add(assignment)
+    await session.flush()
+    return inquiry, assignment
+
+
+async def regional_manager_id(session: AsyncSession, location: str | None) -> uuid.UUID | None:
+    if not location:
+        return None
+    regions = (
+        await session.execute(
+            select(SalesRegion.match_keyword, SalesRegion.manager_id)
+            .join(Staff, Staff.id == SalesRegion.manager_id)
+            .where(
+                SalesRegion.is_active.is_(True),
+                Staff.is_active.is_(True),
+                Staff.role == "manager",
+            )
+        )
+    ).all()
+    normalized = normalize_region_text(location)
+    matches = [
+        (normalize_region_text(keyword), manager_id)
+        for keyword, manager_id in regions
+        if normalize_region_text(keyword) in normalized
+    ]
+    return (
+        max(matches, key=lambda item: (len(item[0]), item[0], str(item[1])))[1] if matches else None
+    )
+
+
+async def curated_partner_id(session: AsyncSession, location: str | None) -> int | None:
+    if not location:
+        return None
+    normalized = normalize_region_text(location)
+    partners = list(
+        (await session.scalars(select(Partner).where(Partner.is_active.is_(True)))).all()
+    )
+    matches = [
+        partner for partner in partners if normalize_region_text(partner.region) in normalized
+    ]
+    return (
+        min(
+            matches, key=lambda partner: (-len(normalize_region_text(partner.region)), partner.id)
+        ).id
+        if matches
+        else None
+    )
+
+
 async def create_inquiry(
     session: AsyncSession,
     account_id: int,
@@ -161,12 +181,16 @@ async def create_inquiry(
     content: str,
     raw_conversation: list[dict[str, Any]] | None,
     llm: LLMClient | None,
+    routing_manager_id: uuid.UUID | None = None,
+    partner_id: int | None = None,
 ) -> tuple[Inquiry, bool]:
     inquiry = Inquiry(
         account_id=account_id,
         channel=channel,
         content=content,
         raw_conversation=raw_conversation,
+        routing_manager_id=routing_manager_id,
+        partner_id=partner_id,
     )
     session.add(inquiry)
     await session.commit()
@@ -180,11 +204,5 @@ async def create_inquiry(
         except Exception:  # noqa: BLE001 - scoring failure must not undo the saved inquiry
             await session.rollback()
             scoring_failed = True
-    try:
-        inquiry = await session.get(Inquiry, inquiry_id) or inquiry
-        await auto_assign(session, inquiry)
-        await session.commit()
-    except Exception:  # noqa: BLE001 - assignment failure must not undo the saved inquiry
-        await session.rollback()
-        inquiry = await session.get(Inquiry, inquiry_id) or inquiry
+    inquiry = await session.get(Inquiry, inquiry_id) or inquiry
     return inquiry, scoring_failed

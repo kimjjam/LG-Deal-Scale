@@ -12,6 +12,7 @@ from app.audit import record_audit
 from app.database import get_session
 from app.models import (
     Account,
+    Assignment,
     Contact,
     Inquiry,
     Interaction,
@@ -76,6 +77,15 @@ async def _validate_links(
 ) -> None:
     await active_account(session, account_id)
     await require_account_access(session, account_id, staff)
+    if inquiry_id is not None and staff.role == "rep":
+        latest_assignee = await session.scalar(
+            select(Assignment.assignee_id)
+            .where(Assignment.inquiry_id == inquiry_id)
+            .order_by(Assignment.assigned_at.desc(), Assignment.id.desc())
+            .limit(1)
+        )
+        if latest_assignee != staff.id:
+            raise HTTPException(status_code=403, detail="문의 담당자만 변경할 수 있습니다.")
     checks = (
         (Contact, contact_id, Contact.account_id, Contact.deleted_at.is_(None), "담당자"),
         (Inquiry, inquiry_id, Inquiry.account_id, None, "문의"),

@@ -1,16 +1,37 @@
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 ActivityType = Literal["call", "email", "meeting", "note", "purchase"]
 InquiryStatus = Literal["open", "routed", "resolved"]
 IntentCategory = Literal["구매임박", "정보탐색", "AS·불만"]
+PurchaseStage = Literal["견적 요청", "모델 비교", "정보 수집"]
+PurchaseTiming = Literal["즉시", "1개월 이내", "3개월 이내", "미정"]
+NearbyStoreStatus = Literal["location_missing", "not_configured", "failed", "no_results", "success"]
 OpportunityStage = Literal["qualify", "develop", "propose", "won", "lost"]
 TaskStatus = Literal["pending", "completed"]
 OPPORTUNITY_AMOUNT_MAX = Decimal("999999999999.99")
+REGION_ALIASES = {
+    "서울특별시": "서울",
+    "서울시": "서울",
+    "부산광역시": "부산",
+    "대구광역시": "대구",
+    "인천광역시": "인천",
+    "광주광역시": "광주",
+    "대전광역시": "대전",
+    "울산광역시": "울산",
+    "세종특별자치시": "세종",
+    "경기도": "경기",
+}
+try:
+    SEOUL_TIMEZONE = ZoneInfo("Asia/Seoul")
+except ZoneInfoNotFoundError:
+    # ponytail: Windows may omit IANA data; modern Korean business time is fixed UTC+9.
+    SEOUL_TIMEZONE = timezone(timedelta(hours=9))
 
 
 def normalize_phone(value: str) -> str:
@@ -18,6 +39,29 @@ def normalize_phone(value: str) -> str:
     if not 7 <= len(normalized) <= 15:
         raise ValueError("연락처는 숫자 7~15자리여야 합니다.")
     return normalized
+
+
+def strip_nonblank(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("문자열을 입력해주세요.")  # noqa: TRY004 - Pydantic converts to 422
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError("공백만 입력할 수 없습니다.")
+    return stripped
+
+
+def normalize_region_text(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("지역을 입력해주세요.")  # noqa: TRY004 - Pydantic converts to 422
+    normalized = "".join(value.split()).casefold()
+    for official, short in REGION_ALIASES.items():
+        normalized = normalized.replace(official.casefold(), short)
+    return normalized
+
+
+def seoul_business_date(now: datetime | None = None) -> date:
+    instant = now or datetime.now(timezone.utc)
+    return instant.astimezone(SEOUL_TIMEZONE).date()
 
 
 class LoginRequest(BaseModel):
@@ -94,14 +138,35 @@ class IntakeFields(BaseModel):
     inquiry: str | None = None
     business_type: str | None = None
     room_count: int | None = Field(default=None, ge=0, le=100_000)
+    seat_count: int | None = Field(default=None, ge=0, le=100_000)
+    employee_count: int | None = Field(default=None, ge=0, le=100_000)
+    store_count: int | None = Field(default=None, ge=0, le=100_000)
     product: str | None = None
     quantity: int | None = Field(default=None, ge=1, le=100_000)
     location: str | None = None
+    purchase_stage: PurchaseStage | None = None
+    purchase_timing: PurchaseTiming | None = None
+
+    @field_validator("business_name", "inquiry", "business_type", mode="before")
+    @classmethod
+    def strip_required_text(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        return strip_nonblank(value)
 
     @field_validator("phone", mode="before")
     @classmethod
     def normalize_optional_phone(cls, value: str | None) -> str | None:
         return normalize_phone(value) if value else value
+
+    @field_validator(
+        "room_count", "seat_count", "employee_count", "store_count", "quantity", mode="before"
+    )
+    @classmethod
+    def reject_boolean_counts(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("count must be a number")  # noqa: TRY004 - Pydantic returns 422
+        return value
 
 
 class ChatTurnRequest(BaseModel):
@@ -124,8 +189,17 @@ class PublicSubmissionRequest(BaseModel):
 class ProductRecommendation(BaseModel):
     name: str
     brand: str
-    price: float
+    price: float | None
+    price_label: str
+    price_source_url: str | None = None
+    price_verified_at: date | None = None
     product_url: str
+
+
+class NearbyStore(BaseModel):
+    name: str
+    address: str
+    phone: str
 
 
 class PublicSubmissionResponse(BaseModel):
@@ -134,11 +208,111 @@ class PublicSubmissionResponse(BaseModel):
     analysis: str | None
     analysis_error: bool = False
     products: list[ProductRecommendation] = Field(default_factory=list)
-    stores: list[dict[str, str]] = Field(default_factory=list)
+    stores: list[NearbyStore] = Field(default_factory=list)
+    nearby_store_status: NearbyStoreStatus
+    nearby_store_message: str
 
 
 class ManualAssignmentRequest(BaseModel):
     assignee_id: uuid.UUID
+
+
+class PartnerLinkRequest(BaseModel):
+    partner_id: int | None = Field(default=None, ge=1)
+
+
+class SalesRegionCreate(BaseModel):
+    region_name: str = Field(min_length=1, max_length=100)
+    match_keyword: str = Field(min_length=1, max_length=100)
+    manager_id: uuid.UUID
+    is_active: bool = True
+
+    _strip_name = field_validator("region_name", mode="before")(strip_nonblank)
+    _normalize_keyword = field_validator("match_keyword", mode="before")(normalize_region_text)
+
+
+class SalesRegionUpdate(BaseModel):
+    region_name: str | None = Field(default=None, min_length=1, max_length=100)
+    match_keyword: str | None = Field(default=None, min_length=1, max_length=100)
+    manager_id: uuid.UUID | None = None
+    is_active: bool | None = None
+
+    _strip_name = field_validator("region_name", mode="before")(strip_nonblank)
+    _normalize_keyword = field_validator("match_keyword", mode="before")(normalize_region_text)
+
+    @model_validator(mode="after")
+    def reject_null_values(self) -> "SalesRegionUpdate":
+        if any(value is None for field, value in self.model_dump(exclude_unset=True).items()):
+            raise ValueError("수정할 지역 값은 null일 수 없습니다.")
+        return self
+
+
+class PartnerCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    address: str = Field(min_length=1, max_length=500)
+    phone: str | None = Field(default=None, max_length=30)
+    region: str = Field(min_length=1, max_length=100)
+    partner_type: Literal["총판", "전문점", "기타"]
+    verification_source: str = Field(min_length=1, max_length=200)
+    verified_at: date
+    is_active: bool = True
+
+    _strip_strings = field_validator(
+        "name", "address", "region", "verification_source", mode="before"
+    )(strip_nonblank)
+
+    @field_validator("phone", mode="before")
+    @classmethod
+    def normalize_partner_phone(cls, value: str | None) -> str | None:
+        return value.strip() or None if isinstance(value, str) else value
+
+    @field_validator("verified_at")
+    @classmethod
+    def reject_future_verification(cls, value: date) -> date:
+        if value > seoul_business_date():
+            raise ValueError("검증일은 미래일 수 없습니다.")
+        return value
+
+
+class PartnerUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    address: str | None = Field(default=None, min_length=1, max_length=500)
+    phone: str | None = Field(default=None, max_length=30)
+    region: str | None = Field(default=None, min_length=1, max_length=100)
+    partner_type: Literal["총판", "전문점", "기타"] | None = None
+    verification_source: str | None = Field(default=None, min_length=1, max_length=200)
+    verified_at: date | None = None
+    is_active: bool | None = None
+
+    _strip_strings = field_validator(
+        "name", "address", "region", "verification_source", mode="before"
+    )(strip_nonblank)
+
+    @field_validator("phone", mode="before")
+    @classmethod
+    def normalize_partner_phone(cls, value: str | None) -> str | None:
+        return value.strip() or None if isinstance(value, str) else value
+
+    @field_validator("verified_at")
+    @classmethod
+    def reject_future_verification(cls, value: date | None) -> date | None:
+        if value and value > seoul_business_date():
+            raise ValueError("검증일은 미래일 수 없습니다.")
+        return value
+
+    @model_validator(mode="after")
+    def reject_null_required_values(self) -> "PartnerUpdate":
+        values = self.model_dump(exclude_unset=True)
+        if any(value is None for field, value in values.items() if field != "phone"):
+            raise ValueError("수정할 파트너 값은 null일 수 없습니다.")
+        return self
+
+
+class PartnerResponse(PartnerCreate):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    created_at: datetime
 
 
 class IntentResult(BaseModel):
