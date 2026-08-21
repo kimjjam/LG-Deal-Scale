@@ -1,4 +1,4 @@
-"""Create DirectDesk schema.
+"""Create LG Deal Scale schema.
 
 Revision ID: 0001
 Revises:

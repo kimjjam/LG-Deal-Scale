@@ -1,2 +1,2 @@
-"""DirectDesk API."""
+"""LG Deal Scale API."""
 

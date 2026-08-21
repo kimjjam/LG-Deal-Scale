@@ -544,7 +544,7 @@ async def safe_send(draft_id: int, session: Session, staff: ManagerStaff) -> dic
                     "Idempotency-Key": f"directdesk-draft-{draft.id}",
                 },
                 json={
-                    "from": "DirectDesk Test <onboarding@resend.dev>",
+                    "from": "LG Deal Scale Test <onboarding@resend.dev>",
                     "to": [settings.test_email_address],
                     "subject": draft.subject,
                     "text": draft.body,
