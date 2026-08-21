@@ -1,20 +1,28 @@
 import { FormEvent, useEffect, useState } from "react";
 
 import { api, loadSession, saveSession } from "../api";
-import type { Account, SearchResult, Session } from "../types";
+import type { SearchResult, Session } from "../types";
+import Accounts from "./Accounts";
+import Dashboard from "./Dashboard";
 import Inbox from "./Inbox";
 import Login from "./Login";
 import Outbound from "./Outbound";
-import { EmptyState, LoadingState } from "./States";
+import Pipeline from "./Pipeline";
+import StaffManagement from "./StaffManagement";
+import Tasks from "./Tasks";
+import { EmptyState } from "./States";
 
-type View = "inbox" | "accounts" | "search" | "leads" | "dashboard";
+type View = "inbox" | "accounts" | "pipeline" | "tasks" | "search" | "leads" | "dashboard" | "staff";
 
 const NAV_ITEMS: Array<{ key: View; label: string; description: string }> = [
   { key: "inbox", label: "문의 인박스", description: "우선순위 문의" },
   { key: "accounts", label: "고객사", description: "계정 정보" },
+  { key: "pipeline", label: "영업기회", description: "딜 파이프라인" },
+  { key: "tasks", label: "할 일", description: "후속 업무" },
   { key: "search", label: "AI 검색", description: "데이터 질문" },
   { key: "leads", label: "잠재고객", description: "아웃바운드" },
-  { key: "dashboard", label: "성과", description: "파이프라인" }
+  { key: "dashboard", label: "성과", description: "파이프라인" },
+  { key: "staff", label: "계정 관리", description: "직원 계정" }
 ];
 
 const SEARCH_EXAMPLES = [
@@ -54,7 +62,11 @@ export default function InternalApp() {
   }
 
   if (!session) return <Login onLogin={login} />;
-  const activeItem = NAV_ITEMS.find((item) => item.key === view) ?? NAV_ITEMS[0];
+  const visibleItems = session.role === "owner"
+    ? NAV_ITEMS
+    : NAV_ITEMS.filter((item) => item.key !== "staff");
+  const currentView = view === "staff" && session.role !== "owner" ? "inbox" : view;
+  const activeItem = visibleItems.find((item) => item.key === currentView) ?? visibleItems[0];
 
   return (
     <div className="internal-shell">
@@ -66,12 +78,12 @@ export default function InternalApp() {
 
         <div className="nav-group">
           <span className="nav-label">WORKSPACE</span>
-          {NAV_ITEMS.map((item) => (
+          {visibleItems.map((item) => (
             <button
               key={item.key}
-              className={view === item.key ? "active" : ""}
+              className={currentView === item.key ? "active" : ""}
               onClick={() => changeView(item.key)}
-              aria-current={view === item.key ? "page" : undefined}
+              aria-current={currentView === item.key ? "page" : undefined}
               title={item.label}
             >
               <NavIcon name={item.key} />
@@ -94,16 +106,19 @@ export default function InternalApp() {
           </div>
           <div className="user-menu">
             <span className="user-avatar" aria-hidden="true">{session.name.slice(0, 1)}</span>
-            <span className="user-copy"><strong>{session.name}</strong><small>{session.role === "manager" ? "관리자" : "영업 담당자"}</small></span>
+            <span className="user-copy"><strong>{session.name}</strong><small>{session.role === "owner" ? "총관리자" : session.role === "manager" ? "관리자" : "영업 담당자"}</small></span>
             <button className="ghost-button" onClick={logout}>로그아웃</button>
           </div>
         </header>
 
-        {view === "inbox" ? <Inbox session={session} /> : null}
-        {view === "accounts" ? <Accounts session={session} /> : null}
-        {view === "search" ? <Search session={session} /> : null}
-        {view === "leads" ? <Outbound session={session} /> : null}
-        {view === "dashboard" ? <Outbound session={session} dashboardOnly /> : null}
+        {currentView === "inbox" ? <Inbox session={session} /> : null}
+        {currentView === "accounts" ? <Accounts session={session} /> : null}
+        {currentView === "pipeline" ? <Pipeline session={session} /> : null}
+        {currentView === "tasks" ? <Tasks session={session} /> : null}
+        {currentView === "search" ? <Search session={session} /> : null}
+        {currentView === "leads" ? <Outbound session={session} /> : null}
+        {currentView === "dashboard" ? <Dashboard session={session} /> : null}
+        {currentView === "staff" && session.role === "owner" ? <StaffManagement session={session} /> : null}
       </div>
     </div>
   );
@@ -113,60 +128,17 @@ function NavIcon({ name }: { name: View }) {
   const paths: Record<View, string> = {
     inbox: "M3.5 5.5h17v13h-17z M3.5 6l8.5 7 8.5-7",
     accounts: "M4 20V7l8-4 8 4v13 M8 10h2 M14 10h2 M8 14h2 M14 14h2 M10 20v-3h4v3",
+    pipeline: "M4 18V9h4v9z M10 18V5h4v13z M16 18v-6h4v6z",
+    tasks: "M5 5h14v14H5z M8 10l2 2 5-5 M8 16h8",
     search: "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14z M16 16l4 4",
     leads: "M12 3l2.2 4.7L19 10l-4.8 2.3L12 17l-2.2-4.7L5 10l4.8-2.3z M5 17l-2 4 M19 17l2 4",
-    dashboard: "M4 20V11h3v9z M10.5 20V4h3v16z M17 20v-6h3v6z"
+    dashboard: "M4 20V11h3v9z M10.5 20V4h3v16z M17 20v-6h3v6z",
+    staff: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z M4 21a8 8 0 0 1 16 0 M19 8v6 M16 11h6"
   };
   return (
     <svg className="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
       <path d={paths[name]} />
     </svg>
-  );
-}
-
-function Accounts({ session }: { session: Session }) {
-  const [accounts, setAccounts] = useState<Account[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    let active = true;
-    void api<Account[]>("/accounts", {}, session)
-      .then((rows) => { if (active) setAccounts(rows); })
-      .catch((requestError: unknown) => {
-        if (active) setError(requestError instanceof Error ? requestError.message : "고객사를 불러오지 못했습니다.");
-      })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, [session]);
-
-  return (
-    <section className="workspace" aria-labelledby="accounts-title" aria-busy={loading}>
-      <div className="commandbar">
-        <div><span className="eyebrow">ACCOUNTS</span><h1 id="accounts-title">고객사</h1><p>문의와 거래의 기준이 되는 업체 정보입니다.</p></div>
-        <span className="count-chip">{accounts.length.toLocaleString("ko-KR")}개 업체</span>
-      </div>
-      {error ? <p className="error notice" role="alert">{error}</p> : null}
-      {loading ? <LoadingState label="고객사를 불러오는 중" /> : (
-        <div className="data-grid-wrap" role="region" aria-label="고객사 표, 가로 스크롤 가능" tabIndex={0}>
-          <table className="data-grid">
-            <caption className="sr-only">등록된 고객사 목록</caption>
-            <thead><tr><th scope="col">업체명</th><th scope="col">연락처</th><th scope="col">업종</th><th scope="col">객실 수</th><th scope="col">등록일</th></tr></thead>
-            <tbody>
-              {accounts.length ? accounts.map((account) => (
-                <tr key={account.id}>
-                  <td><span className="company-cell"><span className="company-avatar" aria-hidden="true">{account.name.slice(0, 1)}</span><strong>{account.name}</strong></span></td>
-                  <td>{account.phone}</td>
-                  <td>{String(account.attributes.business_type ?? "-")}</td>
-                  <td>{String(account.attributes.room_count ?? "-")}</td>
-                  <td>{new Date(account.created_at).toLocaleDateString("ko-KR")}</td>
-                </tr>
-              )) : <tr><td colSpan={5}><EmptyState title="등록된 고객사가 없습니다" description="새 문의가 접수되면 고객사가 자동으로 생성됩니다." /></td></tr>}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </section>
   );
 }
 
@@ -196,7 +168,7 @@ function Search({ session }: { session: Session }) {
   return (
     <section className="workspace" aria-labelledby="search-title">
       <div className="commandbar">
-        <div><span className="eyebrow">READ-ONLY AI SEARCH</span><h1 id="search-title">자연어 데이터 검색</h1><p>일상적인 질문으로 CRM 데이터를 안전하게 조회하세요.</p></div>
+        <div><h1 id="search-title">자연어 데이터 검색</h1><p>일상적인 질문으로 CRM 데이터를 안전하게 조회하세요.</p></div>
         <span className="safety-chip"><span aria-hidden="true">●</span> 읽기 전용</span>
       </div>
 
@@ -226,7 +198,7 @@ function Search({ session }: { session: Session }) {
       {error ? <p className="error notice" role="alert">{error}</p> : null}
       {result ? (
         <section className="search-results" aria-live="polite">
-          <div className="section-heading"><div><span className="eyebrow">RESULT</span><h2>조회 결과</h2></div><span className="count-chip">{result.rows.length}개 행</span></div>
+          <div className="section-heading"><div><h2>조회 결과</h2></div><span className="count-chip">{result.rows.length}개 행</span></div>
           {result.rows.length ? (
             <div className="data-grid-wrap" role="region" aria-label="자연어 검색 결과 표, 가로 스크롤 가능" tabIndex={0}>
               <table className="data-grid">

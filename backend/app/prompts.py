@@ -31,7 +31,9 @@ def analysis_prompt(fields: dict[str, Any], products: list[dict[str, Any]]) -> s
 
 
 def nl2sql_prompt(question: str, schema: dict[str, set[str]]) -> str:
-    rendered = "\n".join(f"- {table}: {', '.join(sorted(columns))}" for table, columns in schema.items())
+    rendered = "\n".join(
+        f"- {table}: {', '.join(sorted(columns))}" for table, columns in schema.items()
+    )
     return (
         "PostgreSQL 쿼리를 정확히 하나의 SELECT 문으로만 반환하세요. 설명, 마크다운, 주석, CTE(WITH)는 "
         "금지합니다. 아래 화이트리스트 밖의 테이블이나 컬럼을 사용하지 마세요.\n"
@@ -39,11 +41,16 @@ def nl2sql_prompt(question: str, schema: dict[str, set[str]]) -> str:
     )
 
 
-def outbound_prompt(lead: dict[str, Any], products: list[dict[str, Any]], sequence_step: int) -> str:
+def outbound_prompt(
+    lead: dict[str, Any],
+    products: list[dict[str, Any]],
+    sequence_step: int,
+    previous_draft: dict[str, str] | None = None,
+) -> str:
     return (
         "가상 공급사 다온비즈 직원이 검토할 B2B 이메일 초안을 JSON subject/body로 작성하세요. 실제 발송 "
         "전 검토용이며 과장, 없는 사양, 수신 동의가 있다는 표현을 쓰지 마세요.\n"
         f"시퀀스 단계: {sequence_step}\n리드: {json.dumps(lead, ensure_ascii=False, default=str)}\n"
+        f"이전 초안: {json.dumps(previous_draft, ensure_ascii=False) if previous_draft else '없음'}\n"
         f"제품: {json.dumps(products, ensure_ascii=False, default=str)}"
     )
-

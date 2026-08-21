@@ -7,7 +7,17 @@ SCHEMA_WHITELIST: dict[str, set[str]] = {
     "accounts": {"id", "name", "phone", "attributes", "created_at"},
     "contacts": {"id", "account_id", "name", "role", "phone", "email"},
     "inquiries": {"id", "account_id", "channel", "content", "status", "created_at"},
-    "interactions": {"id", "account_id", "type", "amount", "created_at"},
+    "interactions": {
+        "id",
+        "account_id",
+        "staff_id",
+        "contact_id",
+        "inquiry_id",
+        "opportunity_id",
+        "type",
+        "amount",
+        "created_at",
+    },
     "scores": {
         "id",
         "inquiry_id",
@@ -44,6 +54,55 @@ SCHEMA_WHITELIST: dict[str, set[str]] = {
         "sent_at",
     },
     "products": {"id", "name", "brand", "category", "price", "product_url", "updated_at"},
+    "opportunities": {
+        "id",
+        "account_id",
+        "inquiry_id",
+        "lead_id",
+        "assignee_id",
+        "title",
+        "amount",
+        "probability",
+        "expected_close_date",
+        "stage",
+        "loss_reason",
+        "created_at",
+        "updated_at",
+    },
+    "tasks": {
+        "id",
+        "account_id",
+        "opportunity_id",
+        "inquiry_id",
+        "assignee_id",
+        "title",
+        "due_at",
+        "status",
+        "completed_at",
+        "created_at",
+    },
+    "opportunity_stage_history": {
+        "id",
+        "opportunity_id",
+        "stage",
+        "changed_by",
+        "changed_at",
+    },
+}
+ALLOWED_FUNCTIONS = {
+    "AVG",
+    "CAST",
+    "COALESCE",
+    "COUNT",
+    "CURRENT_DATE",
+    "DATE_TRUNC",
+    "EXTRACT",
+    "LOWER",
+    "MAX",
+    "MIN",
+    "SUM",
+    "TIMESTAMP_TRUNC",
+    "UPPER",
 }
 
 
@@ -70,14 +129,21 @@ def validate_sql(sql: str) -> str:
     forbidden = (exp.Delete, exp.Update, exp.Insert, exp.Drop, exp.Alter, exp.Create, exp.Command)
     if any(tree.find(kind) for kind in forbidden):
         raise UnsafeQueryError("데이터를 변경하는 SQL은 허용되지 않습니다.")
-    tables = {table.name for table in tree.find_all(exp.Table)}
+    if tree.find(exp.Star):
+        raise UnsafeQueryError("와일드카드 조회는 허용되지 않습니다.")
+    for function in tree.find_all(exp.Func):
+        name = function.name if isinstance(function, exp.Anonymous) else function.sql_name()
+        if name.upper() not in ALLOWED_FUNCTIONS:
+            raise UnsafeQueryError(f"허용되지 않은 함수입니다: {name}")
+    table_nodes = list(tree.find_all(exp.Table))
+    if any(table.catalog or (table.db and table.db != "public") for table in table_nodes):
+        raise UnsafeQueryError("public 스키마의 테이블만 허용됩니다.")
+    tables = {table.name for table in table_nodes}
     if not tables or not tables.issubset(SCHEMA_WHITELIST):
         raise UnsafeQueryError("허용되지 않은 테이블입니다.")
     table_aliases = {table.alias_or_name: table.name for table in tree.find_all(exp.Table)}
     allowed_unqualified = set().union(*(SCHEMA_WHITELIST[table] for table in tables))
     for column in tree.find_all(exp.Column):
-        if column.name == "*":
-            continue
         table_name = table_aliases.get(column.table, column.table) if column.table else None
         allowed = SCHEMA_WHITELIST.get(table_name, allowed_unqualified)
         if column.name not in allowed:
@@ -92,4 +158,3 @@ def validate_sql(sql: str) -> str:
         if int(expression.this) > 200:
             tree.set("limit", exp.Limit(expression=exp.Literal.number(200)))
     return tree.sql(dialect="postgres")
-

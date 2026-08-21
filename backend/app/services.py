@@ -55,9 +55,13 @@ async def score_inquiry(session: AsyncSession, inquiry_id: int, llm: LLMClient) 
         "updated_at": utcnow(),
     }
     if session.get_bind().dialect.name == "postgresql":
-        statement = pg_insert(Score).values(**values).on_conflict_do_update(
-            index_elements=[Score.inquiry_id],
-            set_={key: value for key, value in values.items() if key != "inquiry_id"},
+        statement = (
+            pg_insert(Score)
+            .values(**values)
+            .on_conflict_do_update(
+                index_elements=[Score.inquiry_id],
+                set_={key: value for key, value in values.items() if key != "inquiry_id"},
+            )
         )
         await session.execute(statement)
         await session.flush()
@@ -89,17 +93,28 @@ async def auto_assign(session: AsyncSession, inquiry: Inquiry) -> Assignment:
     )
     assignee_id: uuid.UUID | None = None
     if prior_inquiry_id:
-        assignee_id = await session.scalar(
+        prior_assignee_id = await session.scalar(
             select(Assignment.assignee_id)
             .where(Assignment.inquiry_id == prior_inquiry_id)
-            .order_by(Assignment.assigned_at.desc())
+            .order_by(Assignment.assigned_at.desc(), Assignment.id.desc())
             .limit(1)
         )
+        if prior_assignee_id:
+            assignee_id = await session.scalar(
+                select(Staff.id).where(
+                    Staff.id == prior_assignee_id,
+                    Staff.role == "rep",
+                    Staff.is_active.is_(True),
+                )
+            )
     if assignee_id is None:
         reps = list(
             (
                 await session.scalars(
-                    select(Staff).where(Staff.role == "rep").order_by(Staff.email).with_for_update()
+                    select(Staff)
+                    .where(Staff.role == "rep", Staff.is_active.is_(True))
+                    .order_by(Staff.email)
+                    .with_for_update()
                 )
             ).all()
         )
@@ -108,8 +123,12 @@ async def auto_assign(session: AsyncSession, inquiry: Inquiry) -> Assignment:
         last_assignee = await session.scalar(
             select(Assignment.assignee_id)
             .join(Staff, Staff.id == Assignment.assignee_id)
-            .where(Staff.role == "rep", Assignment.method == "round_robin")
-            .order_by(Assignment.assigned_at.desc())
+            .where(
+                Staff.role == "rep",
+                Staff.is_active.is_(True),
+                Assignment.method == "round_robin",
+            )
+            .order_by(Assignment.assigned_at.desc(), Assignment.id.desc())
             .limit(1)
         )
         rep_ids = [rep.id for rep in reps]
@@ -126,7 +145,7 @@ async def manually_assign(
     session: AsyncSession, inquiry: Inquiry, assignee_id: uuid.UUID
 ) -> Assignment:
     assignee = await session.get(Staff, assignee_id)
-    if not assignee or assignee.role != "rep":
+    if not assignee or assignee.role != "rep" or not assignee.is_active:
         raise ValueError("Sales representative not found")
     assignment = Assignment(inquiry_id=inquiry.id, assignee_id=assignee_id, method="manual")
     inquiry.status = "routed"

@@ -3,16 +3,58 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.requests import Request
 
-from app.models import Account, Assignment, Inquiry, Lead, OutboundDraft, Product, Staff
-from app.routes import outbound
+from app.models import (
+    Account,
+    Assignment,
+    Inquiry,
+    Lead,
+    OutboundDraft,
+    Product,
+    QueryLog,
+    Staff,
+)
+from app.routes import outbound, public, search
 from app.routes.inquiries import inbox
+from app.schemas import (
+    ChatMessage,
+    ChatTurnRequest,
+    IntakeFields,
+    PublicSubmissionRequest,
+    SearchRequest,
+)
 
 
 class DraftLLM:
     async def structured(self, _prompt: str, result_type: type) -> object:
         return result_type(subject="맞춤 제안", body="숙박업 운영 환경에 맞춘 제안입니다.")
+
+
+class IntakeLLM:
+    async def structured(self, _prompt: str, result_type: type) -> object:
+        return result_type(
+            message="접수 준비가 됐습니다.",
+            fields=IntakeFields(
+                business_name="삭제 고객사",
+                phone="010-2222-3333",
+                inquiry="냉장고 문의",
+            ),
+        )
+
+
+class SearchLLM:
+    def __init__(self, response: str = "", fail: bool = False) -> None:
+        self.response = response
+        self.fail = fail
+
+    async def text(self, _prompt: str) -> str:
+        if self.fail:
+            raise RuntimeError("secret provider detail")
+        return self.response
 
 
 @pytest.mark.asyncio
@@ -29,14 +71,14 @@ async def test_inbox_includes_account_and_latest_assignee_names(session: AsyncSe
         name="이전 담당자",
         email="old@example.test",
         hashed_password="not-used",
-        role="rep",
+        role="manager",
     )
     current_rep = Staff(
         id=uuid.uuid4(),
         name="현재 담당자",
         email="current@example.test",
         hashed_password="not-used",
-        role="rep",
+        role="manager",
     )
     account = Account(name="가상호텔", phone="01022223333", attributes={})
     session.add_all([manager, old_rep, current_rep, account])
@@ -79,7 +121,7 @@ async def test_outbound_draft_payload_and_dashboard_mode(
         name="담당자",
         email="rep@example.test",
         hashed_password="not-used",
-        role="rep",
+        role="manager",
     )
     lead = Lead(
         name="가상펜션",
@@ -106,6 +148,7 @@ async def test_outbound_draft_payload_and_dashboard_mode(
         body="첫 본문",
         reviewed_by=staff.id,
         send_mode="dry_run",
+        sent_at=datetime.now(timezone.utc),
     )
     session.add(first)
     await session.flush()
@@ -126,3 +169,103 @@ async def test_outbound_draft_payload_and_dashboard_mode(
     assert [draft["sequence_step"] for draft in drafts] == [2, 1]
     assert drafts[1]["reviewed"] is True
     assert summary["outbound_email_mode"] == "dry_run"
+
+
+@pytest.mark.asyncio
+async def test_public_flow_never_matches_soft_deleted_account(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    account = Account(
+        name="삭제 고객사",
+        phone="01022223333",
+        attributes={},
+        deleted_at=datetime.now(timezone.utc),
+    )
+    session.add(account)
+    await session.commit()
+    monkeypatch.setattr(public, "get_llm_client", lambda: IntakeLLM())
+    request = Request({"type": "http", "client": ("127.0.0.1", 1)})
+    messages = [ChatMessage(role="user", content="문의합니다")]
+    fields = IntakeFields(
+        business_name="삭제 고객사",
+        phone="010-2222-3333",
+        inquiry="냉장고 문의",
+    )
+
+    turn = await public.chat.__wrapped__(
+        request, ChatTurnRequest(messages=messages, fields=fields), session
+    )
+    assert turn.returning_customer is False
+
+    with pytest.raises(HTTPException) as error:
+        await public.submit.__wrapped__(
+            request,
+            PublicSubmissionRequest(messages=messages, fields=fields),
+            session,
+        )
+    assert error.value.status_code == 409
+    assert "복구" in str(error.value.detail)
+    assert await session.scalar(select(Inquiry.id)) is None
+
+
+@pytest.mark.asyncio
+async def test_public_chat_reports_returning_customer_without_name(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session.add(Account(name="노출 금지 업체명", phone="01022223333", attributes={}))
+    await session.commit()
+    monkeypatch.setattr(public, "get_llm_client", lambda: IntakeLLM())
+    request = Request({"type": "http", "client": ("127.0.0.1", 1)})
+
+    turn = await public.chat.__wrapped__(
+        request,
+        ChatTurnRequest(messages=[ChatMessage(role="user", content="문의합니다")]),
+        session,
+    )
+
+    assert turn.returning_customer is True
+    assert "노출 금지 업체명" not in turn.model_dump_json()
+
+
+@pytest.mark.parametrize(
+    ("llm", "category"),
+    [
+        (SearchLLM(fail=True), "generation_error"),
+        (SearchLLM("DROP TABLE accounts"), "validation_error"),
+        (SearchLLM("SELECT accounts.name FROM accounts"), "execution_error"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_nl2sql_failures_are_audited(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    llm: SearchLLM,
+    category: str,
+) -> None:
+    staff = Staff(
+        id=uuid.uuid4(),
+        name="검색 담당자",
+        email=f"{category}@example.test",
+        hashed_password="not-used",
+        role="manager",
+    )
+    session.add(staff)
+    await session.commit()
+    monkeypatch.setattr(
+        search,
+        "get_settings",
+        lambda: SimpleNamespace(effective_database_readonly_url="sqlite+aiosqlite:///:memory:"),
+    )
+    monkeypatch.setattr(search, "get_llm_client", lambda: llm)
+
+    with pytest.raises(HTTPException):
+        await search.natural_language_search(
+            SearchRequest(question="고객사를 찾아줘"), session, staff
+        )
+
+    log = await session.scalar(select(QueryLog))
+    assert log is not None
+    assert log.success is False
+    assert log.error_category == category
+    assert "secret" not in (log.error_message or "")
+    assert log.row_count == 0

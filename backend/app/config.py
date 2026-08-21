@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     test_email_address: EmailStr | None = None
     email_provider_api_key: str | None = None
     seed_staff_password: str | None = Field(default=None, min_length=12)
+    owner_name: str | None = Field(default=None, min_length=1, max_length=100)
+    owner_email: EmailStr | None = None
+    owner_password: SecretStr | None = Field(default=None, min_length=12, max_length=128)
 
     @field_validator("database_url", "database_readonly_url", mode="before")
     @classmethod
@@ -60,9 +63,7 @@ class Settings(BaseSettings):
         parts = urlsplit(self.database_url)
         host = parts.netloc.rsplit("@", 1)[-1]
         password = quote(self.database_readonly_password.get_secret_value(), safe="")
-        return urlunsplit(
-            (parts.scheme, f"directdesk_readonly:{password}@{host}", *parts[2:])
-        )
+        return urlunsplit((parts.scheme, f"directdesk_readonly:{password}@{host}", *parts[2:]))
 
 
 @lru_cache

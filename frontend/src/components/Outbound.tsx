@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { Lead, OutboundDashboard, OutboundDraft, Session } from "../types";
 import DetailDialog from "./DetailDialog";
+import CsvControls from "./CsvControls";
 import { EmptyState, LoadingState } from "./States";
 
 const STAGE_LABELS: Record<string, string> = {
@@ -15,15 +16,15 @@ const STAGE_LABELS: Record<string, string> = {
   dropped: "종결"
 };
 
-const PIPELINE_ORDER = [
-  "discovered",
-  "draft_generated",
-  "approved",
-  "contacted",
-  "follow_up_due",
-  "converted",
-  "dropped"
-];
+const PAGE_SIZE = 25;
+
+const NEXT_STAGES: Record<string, string[]> = {
+  discovered: ["draft_generated", "dropped"],
+  draft_generated: ["dropped"],
+  approved: ["contacted", "follow_up_due", "dropped"],
+  contacted: ["follow_up_due", "dropped"],
+  follow_up_due: ["contacted", "dropped"]
+};
 
 interface SendResponse {
   id: number;
@@ -31,27 +32,42 @@ interface SendResponse {
   sent_at: string;
 }
 
-export default function Outbound({ session, dashboardOnly = false }: { session: Session; dashboardOnly?: boolean }) {
+export default function Outbound({ session }: { session: Session }) {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [dashboard, setDashboard] = useState<OutboundDashboard | null>(null);
   const [selected, setSelected] = useState<Lead | null>(null);
   const [drafts, setDrafts] = useState<OutboundDraft[]>([]);
   const [activeDraftId, setActiveDraftId] = useState<number | null>(null);
   const [confirmed, setConfirmed] = useState(false);
+  const [editSubject, setEditSubject] = useState("");
+  const [editBody, setEditBody] = useState("");
+  const [contactChannel, setContactChannel] = useState("phone");
+  const [contactNote, setContactNote] = useState("");
   const [busyAction, setBusyAction] = useState("");
   const [loading, setLoading] = useState(true);
   const [draftLoading, setDraftLoading] = useState(false);
   const [error, setError] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  const [stage, setStage] = useState("");
+  const [offset, setOffset] = useState(0);
+  const [hasNext, setHasNext] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const canManage = session.role !== "rep";
   const selectedId = selected?.id;
 
   useEffect(() => {
     let active = true;
+    const query = new URLSearchParams({ limit: String(PAGE_SIZE + 1), offset: String(offset) });
+    if (search) query.set("q", search);
+    if (stage) query.set("status", stage);
     Promise.all([
-      dashboardOnly ? Promise.resolve([]) : api<Lead[]>("/outbound/leads", {}, session),
+      api<Lead[]>(`/outbound/leads?${query}`, {}, session),
       api<OutboundDashboard>("/outbound/dashboard", {}, session)
     ]).then(([leadRows, metrics]) => {
       if (active) {
-        setLeads(leadRows);
+        setHasNext(leadRows.length > PAGE_SIZE);
+        setLeads(leadRows.slice(0, PAGE_SIZE));
         setDashboard(metrics);
       }
     }).catch((requestError: unknown) => {
@@ -60,7 +76,7 @@ export default function Outbound({ session, dashboardOnly = false }: { session: 
       if (active) setLoading(false);
     });
     return () => { active = false; };
-  }, [dashboardOnly, session]);
+  }, [session, search, stage, offset, refreshKey]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -70,6 +86,8 @@ export default function Outbound({ session, dashboardOnly = false }: { session: 
         if (active) {
           setDrafts(rows);
           setActiveDraftId(rows[0]?.id ?? null);
+          setEditSubject(rows[0]?.subject ?? "");
+          setEditBody(rows[0]?.body ?? "");
         }
       })
       .catch((requestError: unknown) => {
@@ -110,8 +128,10 @@ export default function Outbound({ session, dashboardOnly = false }: { session: 
       const draft = await api<OutboundDraft>(`/outbound/leads/${leadId}/drafts`, { method: "POST" }, session);
       setDrafts((rows) => [draft, ...rows.filter((row) => row.id !== draft.id)]);
       setActiveDraftId(draft.id);
+      setEditSubject(draft.subject);
+      setEditBody(draft.body);
       setConfirmed(false);
-      updateLeadStage(leadId, "draft_generated");
+      if (selected?.pipeline_stage === "discovered") updateLeadStage(leadId, "draft_generated");
       await refreshDashboard();
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "초안을 만들지 못했습니다.");
@@ -126,7 +146,7 @@ export default function Outbound({ session, dashboardOnly = false }: { session: 
     try {
       await api(`/outbound/drafts/${draft.id}/review`, { method: "POST" }, session);
       setDrafts((rows) => rows.map((row) => row.id === draft.id ? { ...row, reviewed: true } : row));
-      updateLeadStage(draft.lead_id, "approved");
+      if (selected?.pipeline_stage === "draft_generated") updateLeadStage(draft.lead_id, "approved");
       await refreshDashboard();
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "검토 상태를 저장하지 못했습니다.");
@@ -145,7 +165,6 @@ export default function Outbound({ session, dashboardOnly = false }: { session: 
         sent_at: response.sent_at,
         send_mode: response.mode
       } : row));
-      updateLeadStage(draft.lead_id, "contacted");
       await refreshDashboard();
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "안전 발송을 완료하지 못했습니다.");
@@ -154,26 +173,79 @@ export default function Outbound({ session, dashboardOnly = false }: { session: 
     }
   }
 
-  if (dashboardOnly) {
-    return (
-      <section className="workspace" aria-labelledby="dashboard-title" aria-busy={loading}>
-        <div className="commandbar">
-          <div><span className="eyebrow">OUTBOUND PERFORMANCE</span><h1 id="dashboard-title">아웃바운드 성과</h1><p>시스템에 기록된 이벤트를 기준으로 파이프라인을 살펴봅니다.</p></div>
-          {dashboard ? <ModeChip mode={dashboard.outbound_email_mode} /> : null}
-        </div>
-        {error ? <p className="error notice" role="alert">{error}</p> : null}
-        {loading ? <LoadingState label="성과 지표를 계산하는 중" /> : dashboard ? <Dashboard metrics={dashboard} /> : <EmptyState title="표시할 성과가 없습니다" description="아웃바운드 활동이 시작되면 지표가 표시됩니다." />}
-      </section>
-    );
+  async function saveDraft(draft: OutboundDraft) {
+    setBusyAction("edit");
+    setError("");
+    try {
+      const updated = await api<OutboundDraft>(`/outbound/drafts/${draft.id}`, { method: "PATCH", body: JSON.stringify({ subject: editSubject, body: editBody }) }, session);
+      setDrafts((rows) => rows.map((row) => row.id === updated.id ? updated : row));
+      setConfirmed(false);
+      if (selected?.pipeline_stage === "approved") updateLeadStage(draft.lead_id, "draft_generated");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "초안을 수정하지 못했습니다.");
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function changeStage(leadId: number, pipelineStage: string) {
+    setBusyAction("stage");
+    setError("");
+    try {
+      await api(`/outbound/leads/${leadId}/stage`, { method: "PUT", body: JSON.stringify({ pipeline_stage: pipelineStage }) }, session);
+      updateLeadStage(leadId, pipelineStage);
+      await refreshDashboard();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "단계를 변경하지 못했습니다.");
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function recordContact(leadId: number) {
+    setBusyAction("contact");
+    setError("");
+    try {
+      await api(`/outbound/leads/${leadId}/actual-contact`, { method: "POST", body: JSON.stringify({ channel: contactChannel, note: contactNote || null }) }, session);
+      updateLeadStage(leadId, "contacted");
+      setContactNote("");
+      await refreshDashboard();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "실제 접촉을 기록하지 못했습니다.");
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function stopSequence(leadId: number) {
+    setBusyAction("stop");
+    setError("");
+    try {
+      await api(`/outbound/leads/${leadId}/stop`, { method: "POST" }, session);
+      updateLeadStage(leadId, "dropped");
+      await refreshDashboard();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "시퀀스를 중단하지 못했습니다.");
+    } finally {
+      setBusyAction("");
+    }
   }
 
   const activeDraft = drafts.find((draft) => draft.id === activeDraftId) ?? drafts[0] ?? null;
+  const latestDraft = drafts[0] ?? null;
+  const canGenerateDraft = !latestDraft || Boolean(latestDraft.reviewed && latestDraft.sent_at);
+  const nextStages = selected ? (NEXT_STAGES[selected.pipeline_stage] ?? []).filter((nextStage) => nextStage !== "contacted" && nextStage !== "dropped") : [];
   return (
     <section className="workspace" aria-labelledby="leads-title" aria-busy={loading}>
       <div className="commandbar">
-        <div><span className="eyebrow">OUTBOUND PIPELINE</span><h1 id="leads-title">잠재고객</h1><p>리드 근거를 확인하고 검토된 메시지만 안전하게 다음 단계로 보냅니다.</p></div>
-        <div className="command-actions">{dashboard ? <ModeChip mode={dashboard.outbound_email_mode} /> : null}<span className="count-chip">{leads.length}개 리드</span></div>
+        <div><h1 id="leads-title">잠재고객</h1><p>리드 근거를 확인하고 검토된 메시지만 안전하게 다음 단계로 보냅니다.</p></div>
+        <div className="command-actions">{canManage ? <CsvControls session={session} importPath="/outbound/leads/import" exportPath="/outbound/leads/export.csv" filename="leads.csv" onImported={() => { setOffset(0); setRefreshKey((value) => value + 1); }} /> : null}{dashboard ? <ModeChip mode={dashboard.outbound_email_mode} /> : null}<span className="count-chip">현재 페이지 {leads.length}개</span></div>
       </div>
+      <form className="compact-filter" onSubmit={(event) => { event.preventDefault(); setOffset(0); setSearch(searchInput.trim()); }}>
+        <label>리드 검색<input value={searchInput} onChange={(event) => setSearchInput(event.target.value)} placeholder="업체명 또는 주소" /></label>
+        <label>단계<select value={stage} onChange={(event) => { setStage(event.target.value); setOffset(0); }}><option value="">전체</option>{Object.entries(STAGE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <button className="secondary-button" type="submit">검색</button>
+      </form>
       {error ? <p className="error notice" role="alert">{error}</p> : null}
       {loading ? <LoadingState label="잠재고객을 불러오는 중" /> : (
         <div className="data-grid-wrap" role="region" aria-label="잠재고객 표, 가로 스크롤 가능" tabIndex={0}>
@@ -193,17 +265,19 @@ export default function Outbound({ session, dashboardOnly = false }: { session: 
           </table>
         </div>
       )}
+      <div className="pager"><button className="secondary-button" type="button" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}>이전</button><span>{Math.floor(offset / PAGE_SIZE) + 1}페이지</span><button className="secondary-button" type="button" disabled={!hasNext} onClick={() => setOffset(offset + PAGE_SIZE)}>다음</button></div>
 
       {selected ? (
         <DetailDialog labelledBy="lead-detail-title" onClose={closeLead}>
           <div className="panel-heading">
-            <div><span className="eyebrow">LEAD #{selected.id}</span><h2 id="lead-detail-title">{selected.name}</h2></div>
+            <div><span>잠재고객 #{selected.id}</span><h2 id="lead-detail-title">{selected.name}</h2></div>
             <button className="icon-button" type="button" onClick={closeLead} aria-label="잠재고객 상세 닫기">×</button>
           </div>
           <div className="panel-content">
             <div className="detail-meta"><span className={`status-badge stage-${selected.pipeline_stage}`}>{STAGE_LABELS[selected.pipeline_stage] ?? selected.pipeline_stage}</span><span>{selected.business_type ?? "업종 미상"}</span><span>{selected.address ?? "주소 미상"}</span></div>
+            {canManage && !["converted", "dropped"].includes(selected.pipeline_stage) ? <section className="lead-actions" aria-labelledby="lead-stage-title"><h3 id="lead-stage-title">진행 관리</h3>{nextStages.length ? <label>다음 단계<select defaultValue="" disabled={Boolean(busyAction)} onChange={(event) => { if (event.target.value) void changeStage(selected.id, event.target.value); event.target.value = ""; }}><option value="">선택</option>{nextStages.map((nextStage) => <option key={nextStage} value={nextStage}>{STAGE_LABELS[nextStage]}</option>)}</select></label> : null}<details><summary>실제 접촉 기록</summary><div className="contact-form"><label>채널<select value={contactChannel} onChange={(event) => setContactChannel(event.target.value)}><option value="phone">전화</option><option value="email">이메일</option><option value="meeting">미팅</option><option value="other">기타</option></select></label><label>메모<textarea value={contactNote} onChange={(event) => setContactNote(event.target.value)} maxLength={1000} /></label><button className="primary" type="button" disabled={Boolean(busyAction)} onClick={() => void recordContact(selected.id)}>접촉 기록</button></div></details><button className="danger-button" type="button" disabled={Boolean(busyAction)} onClick={() => { if (window.confirm("이 리드의 아웃바운드 시퀀스를 종결할까요?")) void stopSequence(selected.id); }}>시퀀스 중단</button></section> : null}
             <section className="lead-score-card" aria-labelledby="lead-score-title">
-              <div><span className="eyebrow">LEAD SCORE</span><h3 id="lead-score-title">발굴 근거</h3></div>
+              <div><h3 id="lead-score-title">발굴 근거</h3></div>
               <strong>{selected.lead_score}<small>/100</small></strong>
             </section>
             <div className="lead-reasons">
@@ -213,21 +287,23 @@ export default function Outbound({ session, dashboardOnly = false }: { session: 
             <section className="draft-workflow" aria-labelledby="draft-title">
               <div className="section-heading compact">
                 <div><h3 id="draft-title">아웃바운드 메시지</h3><span>최대 3단계 시퀀스</span></div>
-                {drafts.length < 3 ? <button className="secondary-button" type="button" disabled={Boolean(busyAction)} onClick={() => void generateDraft(selected.id)}>{busyAction === "generate" ? "AI 작성 중…" : drafts.length ? "후속 초안 생성" : "첫 초안 생성"}</button> : null}
+                {canManage && drafts.length < 3 ? <button className="secondary-button" type="button" disabled={Boolean(busyAction) || !canGenerateDraft} onClick={() => void generateDraft(selected.id)}>{busyAction === "generate" ? "AI 작성 중…" : drafts.length ? "후속 초안 생성" : "첫 초안 생성"}</button> : null}
               </div>
+              {canManage && latestDraft && drafts.length < 3 && !canGenerateDraft ? <p className="notice">후속 초안은 최신 초안을 검토하고 안전 발송 처리한 뒤 생성할 수 있습니다.</p> : null}
               <ModeNotice mode={dashboard?.outbound_email_mode ?? "dry_run"} />
               {draftLoading ? <LoadingState label="저장된 초안을 불러오는 중" /> : drafts.length ? (
                 <>
-                  <div className="draft-tabs" role="tablist" aria-label="시퀀스 초안">
-                    {drafts.map((draft) => <button key={draft.id} role="tab" aria-selected={activeDraft?.id === draft.id} className={activeDraft?.id === draft.id ? "active" : ""} onClick={() => { setActiveDraftId(draft.id); setConfirmed(false); }}>{draft.sequence_step}단계 {draft.sent_at ? "완료" : draft.reviewed ? "검토됨" : "초안"}</button>)}
+                  <div className="draft-tabs" aria-label="시퀀스 초안 선택">
+                    {drafts.map((draft) => <button key={draft.id} type="button" aria-pressed={activeDraft?.id === draft.id} className={activeDraft?.id === draft.id ? "active" : ""} onClick={() => { setActiveDraftId(draft.id); setEditSubject(draft.subject); setEditBody(draft.body); setConfirmed(false); }}>{draft.sequence_step}단계 {draft.sent_at ? "완료" : draft.reviewed ? "검토됨" : "초안"}</button>)}
                   </div>
                   {activeDraft ? (
                     <article className="draft-card">
                       <div className="draft-meta"><span>{activeDraft.sequence_step}단계</span><span>{new Date(activeDraft.generated_at).toLocaleString("ko-KR")}</span></div>
-                      <h4>{activeDraft.subject}</h4>
-                      <div className="draft-body">{activeDraft.body}</div>
+                      {activeDraft.sent_at || !canManage ? <><h4>{activeDraft.subject}</h4><div className="draft-body">{activeDraft.body}</div></> : <div className="draft-editor"><label>제목<input value={editSubject} onChange={(event) => setEditSubject(event.target.value)} maxLength={300} /></label><label>본문<textarea value={editBody} onChange={(event) => setEditBody(event.target.value)} maxLength={20000} /></label><button className="secondary-button" type="button" disabled={Boolean(busyAction) || !editSubject.trim() || !editBody.trim() || (editSubject === activeDraft.subject && editBody === activeDraft.body)} onClick={() => void saveDraft(activeDraft)}>{busyAction === "edit" ? "저장 중…" : "수정 저장"}</button><p>수정하면 기존 검토 완료 상태가 해제되어 다시 검토해야 합니다.</p></div>}
                       {activeDraft.sent_at ? (
                         <p className="success notice" role="status">{activeDraft.send_mode === "dry_run" ? "드라이런 기록이 완료됐습니다." : "설정된 테스트 주소로 발송됐습니다."}</p>
+                      ) : !canManage ? (
+                        <p className="notice" role="status">영업 담당자는 아웃바운드 기록을 조회만 할 수 있습니다.</p>
                       ) : !activeDraft.reviewed ? (
                         <div className="draft-actions"><p>제목과 본문을 직접 읽고 문제없을 때만 검토를 완료하세요.</p><button className="primary" disabled={Boolean(busyAction)} onClick={() => void reviewDraft(activeDraft)}>{busyAction === "review" ? "저장 중…" : "내용 검토 완료"}</button></div>
                       ) : (
@@ -254,34 +330,6 @@ function ModeChip({ mode }: { mode: "dry_run" | "test_override" }) {
 
 function ModeNotice({ mode }: { mode: "dry_run" | "test_override" }) {
   return <p className={`mode-notice ${mode}`}><strong>{mode === "dry_run" ? "안전한 연습 모드" : "테스트 주소 제한 모드"}</strong><span>{mode === "dry_run" ? "실제 이메일은 전송되지 않고 내부 기록만 남습니다." : "실제 고객 주소가 아닌 설정된 테스트 주소로만 전송됩니다."}</span></p>;
-}
-
-function Dashboard({ metrics }: { metrics: OutboundDashboard }) {
-  const max = Math.max(1, ...Object.values(metrics.pipeline));
-  const total = Object.values(metrics.pipeline).reduce((sum, count) => sum + count, 0);
-  const contacted = (metrics.pipeline.contacted ?? 0) + (metrics.pipeline.converted ?? 0);
-  return (
-    <>
-      <div className="summary-cards">
-        <section><span>전체 잠재고객</span><strong>{total}</strong><small>현재 파이프라인</small></section>
-        <section><span>초안 승인률</span><strong>{Math.round(metrics.draft_approval_rate * 100)}%</strong><small>검토 완료 / 생성 초안</small></section>
-        <section><span>접촉 완료</span><strong>{contacted}</strong><small>접촉 및 전환</small></section>
-      </div>
-      <div className="metrics-layout">
-        <section className="metric-block pipeline-block">
-          <div className="section-heading compact"><div><h2>파이프라인</h2><span>단계별 리드 분포</span></div></div>
-          {PIPELINE_ORDER.filter((stage) => metrics.pipeline[stage]).map((stage) => {
-            const count = metrics.pipeline[stage];
-            return <div className="bar-row" key={stage}><span>{STAGE_LABELS[stage] ?? stage}</span><div className="bar-track" aria-hidden="true"><span style={{ width: `${(count / max) * 100}%` }} /></div><strong>{count}</strong></div>;
-          })}
-        </section>
-        <section className="metric-block">
-          <div className="section-heading compact"><div><h2>시퀀스 분포</h2><span>생성된 메시지 단계</span></div></div>
-          <div className="sequence-list">{[1, 2, 3].map((step) => <div key={step}><span>{step}단계</span><strong>{metrics.sequence_distribution[String(step)] ?? metrics.sequence_distribution[step] ?? 0}</strong></div>)}</div>
-        </section>
-      </div>
-    </>
-  );
 }
 
 function humanizeAxis(axis: string) {

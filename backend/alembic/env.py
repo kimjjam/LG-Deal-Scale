@@ -17,6 +17,8 @@ target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
+    if not config.get_main_option("sqlalchemy.url").startswith("postgresql"):
+        raise RuntimeError("Alembic migrations require PostgreSQL.")
     context.configure(
         url=config.get_main_option("sqlalchemy.url"),
         target_metadata=target_metadata,
@@ -29,6 +31,8 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection: object) -> None:
+    if connection.dialect.name != "postgresql":
+        raise RuntimeError("Alembic migrations require PostgreSQL.")
     context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
     with context.begin_transaction():
         context.run_migrations()
@@ -49,4 +53,3 @@ if context.is_offline_mode():
     run_migrations_offline()
 else:
     asyncio.run(run_async_migrations())
-

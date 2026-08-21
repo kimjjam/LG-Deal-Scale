@@ -26,7 +26,7 @@ export default function PublicInquiry() {
   const [fields, setFields] = useState<IntakeFields>({});
   const [input, setInput] = useState("");
   const [ready, setReady] = useState(false);
-  const [returningName, setReturningName] = useState<string | null>(null);
+  const [returningCustomer, setReturningCustomer] = useState(false);
   const [result, setResult] = useState<PublicResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -59,7 +59,7 @@ export default function PublicInquiry() {
       }, null);
       setFields(turn.fields);
       setReady(turn.ready_for_analysis);
-      setReturningName(turn.returning_business_name ?? null);
+      setReturningCustomer(turn.returning_customer);
       setMessages((current) => [...current, { role: "assistant", content: turn.message }]);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "다시 시도해주세요.");
@@ -98,7 +98,7 @@ export default function PublicInquiry() {
     setFields({});
     setInput("");
     setReady(false);
-    setReturningName(null);
+    setReturningCustomer(false);
     setResult(null);
     setError("");
   }
@@ -137,7 +137,7 @@ export default function PublicInquiry() {
             <span aria-hidden="true">AI</span>
             <div><strong>복잡한 양식 없이 시작하세요</strong><p>업체 상황과 필요한 제품을 대화로 알려주시면 꼭 필요한 내용만 정리합니다.</p></div>
           </div>
-          {returningName ? <p className="returning">이전 상담 정보를 찾았어요 · {returningName}</p> : null}
+          {returningCustomer ? <p className="returning">이전에 상담하신 연락처로 확인됐어요.</p> : null}
           {messages.map((message, index) => (
             <div className={`message-row ${message.role}`} key={`${message.role}-${index}`}>
               {message.role === "assistant" ? <span className="message-avatar" aria-hidden="true">D</span> : null}

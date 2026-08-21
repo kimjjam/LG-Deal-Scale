@@ -37,6 +37,7 @@ class Account(Base):
     phone: Mapped[str] = mapped_column(String(30), unique=True, index=True)
     attributes: Mapped[dict[str, Any]] = mapped_column(JsonType, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class Contact(Base):
@@ -48,6 +49,7 @@ class Contact(Base):
     role: Mapped[str | None] = mapped_column(String(100))
     phone: Mapped[str | None] = mapped_column(String(30))
     email: Mapped[str | None] = mapped_column(String(320))
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class Inquiry(Base):
@@ -57,22 +59,42 @@ class Inquiry(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("accounts.id", ondelete="CASCADE"), index=True
+    )
     channel: Mapped[str] = mapped_column(String(30), default="web")
     content: Mapped[str] = mapped_column(Text)
     raw_conversation: Mapped[list[dict[str, Any]] | None] = mapped_column(JsonType)
     status: Mapped[str] = mapped_column(String(20), default="open", index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
 
 
 class Interaction(Base):
     __tablename__ = "interactions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("accounts.id", ondelete="CASCADE"), index=True
+    )
+    staff_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("staff.id"), index=True)
+    contact_id: Mapped[int | None] = mapped_column(
+        ForeignKey("contacts.id", ondelete="SET NULL"), index=True
+    )
+    inquiry_id: Mapped[int | None] = mapped_column(
+        ForeignKey("inquiries.id", ondelete="SET NULL"), index=True
+    )
+    opportunity_id: Mapped[int | None] = mapped_column(
+        ForeignKey("opportunities.id", ondelete="SET NULL"), index=True
+    )
     type: Mapped[str] = mapped_column(String(30))
+    content: Mapped[str | None] = mapped_column(Text)
+    outcome: Mapped[str | None] = mapped_column(String(200))
     amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
 
 
 class Score(Base):
@@ -93,18 +115,21 @@ class Score(Base):
     llm_provider: Mapped[str] = mapped_column(String(30))
     model_name: Mapped[str] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
 
 
 class Staff(Base):
     __tablename__ = "staff"
-    __table_args__ = (CheckConstraint("role IN ('manager', 'rep')", name="ck_staff_role"),)
+    __table_args__ = (CheckConstraint("role IN ('owner', 'manager', 'rep')", name="ck_staff_role"),)
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(100))
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
     hashed_password: Mapped[str] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(String(20))
+    is_active: Mapped[bool] = mapped_column(default=True, index=True)
 
 
 class Assignment(Base):
@@ -114,10 +139,101 @@ class Assignment(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    inquiry_id: Mapped[int] = mapped_column(ForeignKey("inquiries.id", ondelete="CASCADE"), index=True)
+    inquiry_id: Mapped[int] = mapped_column(
+        ForeignKey("inquiries.id", ondelete="CASCADE"), index=True
+    )
     assignee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("staff.id"), index=True)
-    assigned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    assigned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
     method: Mapped[str] = mapped_column(String(20))
+
+
+class Opportunity(Base):
+    __tablename__ = "opportunities"
+    __table_args__ = (
+        CheckConstraint(
+            "stage IN ('qualify', 'develop', 'propose', 'won', 'lost')",
+            name="ck_opportunity_stage",
+        ),
+        CheckConstraint("probability BETWEEN 0 AND 100", name="ck_opportunity_probability"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("accounts.id", ondelete="CASCADE"), index=True
+    )
+    inquiry_id: Mapped[int | None] = mapped_column(
+        ForeignKey("inquiries.id", ondelete="SET NULL"), unique=True
+    )
+    lead_id: Mapped[int | None] = mapped_column(
+        ForeignKey("leads.id", ondelete="SET NULL"), unique=True
+    )
+    assignee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("staff.id"), index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    probability: Mapped[int] = mapped_column(Integer, default=10)
+    expected_close_date: Mapped[date | None] = mapped_column(Date)
+    stage: Mapped[str] = mapped_column(String(20), default="qualify", index=True)
+    loss_reason: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class OpportunityStageHistory(Base):
+    __tablename__ = "opportunity_stage_history"
+    __table_args__ = (
+        CheckConstraint(
+            "stage IN ('qualify', 'develop', 'propose', 'won', 'lost')",
+            name="ck_opportunity_history_stage",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    opportunity_id: Mapped[int] = mapped_column(
+        ForeignKey("opportunities.id", ondelete="CASCADE"), index=True
+    )
+    stage: Mapped[str] = mapped_column(String(20))
+    changed_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("staff.id"))
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Task(Base):
+    __tablename__ = "tasks"
+    __table_args__ = (CheckConstraint("status IN ('pending', 'completed')", name="ck_task_status"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("accounts.id", ondelete="CASCADE"), index=True
+    )
+    opportunity_id: Mapped[int | None] = mapped_column(
+        ForeignKey("opportunities.id", ondelete="CASCADE"), index=True
+    )
+    inquiry_id: Mapped[int | None] = mapped_column(
+        ForeignKey("inquiries.id", ondelete="CASCADE"), index=True
+    )
+    assignee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("staff.id"), index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("staff.id", ondelete="SET NULL"), index=True
+    )
+    action: Mapped[str] = mapped_column(String(50), index=True)
+    resource_type: Mapped[str] = mapped_column(String(50))
+    resource_id: Mapped[str] = mapped_column(String(100))
+    details: Mapped[dict[str, Any]] = mapped_column(JsonType, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class QueryLog(Base):
@@ -128,6 +244,9 @@ class QueryLog(Base):
     question: Mapped[str] = mapped_column(Text)
     generated_sql: Mapped[str] = mapped_column(Text)
     row_count: Mapped[int] = mapped_column(Integer)
+    success: Mapped[bool] = mapped_column(default=True, index=True)
+    error_category: Mapped[str | None] = mapped_column(String(50))
+    error_message: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -186,4 +305,3 @@ class Product(Base):
     price: Mapped[Decimal] = mapped_column(Numeric(14, 2))
     product_url: Mapped[str] = mapped_column(String(1000))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-

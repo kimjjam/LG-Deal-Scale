@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -33,6 +34,20 @@ Session = Annotated[AsyncSession, Depends(get_session)]
 class ChatAIResult(BaseModel):
     message: str
     fields: IntakeFields
+
+
+def _relevant_products(products: list[Product], fields: IntakeFields) -> list[Product]:
+    haystack = " ".join(filter(None, (fields.product, fields.inquiry))).lower()
+    terms = [term for term in re.findall(r"[0-9a-z가-힣]+", haystack) if len(term) > 1]
+    matched = []
+    for product in products:
+        name = product.name.lower()
+        category = product.category.lower()
+        if category in haystack or name in haystack or any(
+            term in name or term in category for term in terms
+        ):
+            matched.append(product)
+    return matched[:10]
 
 
 def _fallback_turn(fields: IntakeFields) -> ChatAIResult:
@@ -90,19 +105,22 @@ async def chat(request: Request, payload: ChatTurnRequest, session: Session) -> 
         )
     except Exception:  # noqa: BLE001 - public chat must remain usable when the LLM is unavailable
         result = _fallback_turn(payload.fields)
-    returning_name = None
+    returning_customer = False
     if result.fields.phone:
-        returning_name = await session.scalar(
-            select(Account.name).where(Account.phone == result.fields.phone)
+        returning_customer = (
+            await session.scalar(
+                select(Account.id).where(
+                    Account.phone == result.fields.phone, Account.deleted_at.is_(None)
+                )
+            )
+            is not None
         )
-    ready = all(
-        (result.fields.business_name, result.fields.phone, result.fields.inquiry)
-    )
+    ready = all((result.fields.business_name, result.fields.phone, result.fields.inquiry))
     return ChatTurnResponse(
         message=result.message,
         fields=result.fields,
         ready_for_analysis=ready,
-        returning_business_name=returning_name,
+        returning_customer=returning_customer,
     )
 
 
@@ -116,6 +134,11 @@ async def submit(
     if not fields.business_name or not fields.phone or not fields.inquiry:
         raise HTTPException(status_code=422, detail="업체명, 연락처, 문의내용이 필요합니다.")
     account = await session.scalar(select(Account).where(Account.phone == fields.phone))
+    if account and account.deleted_at is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="동일 연락처의 삭제된 고객사가 있습니다. 관리자에게 복구를 요청해주세요.",
+        )
     if not account:
         account = Account(
             name=fields.business_name,
@@ -126,17 +149,31 @@ async def submit(
             },
         )
         session.add(account)
-        await session.flush()
+        try:
+            await session.flush()
+        except IntegrityError:
+            await session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="동일 연락처가 이미 등록되어 있습니다. 다시 시도해주세요.",
+            ) from None
     try:
         llm = get_llm_client()
     except RuntimeError:
         llm = None
-    raw = [message.model_dump() for message in payload.messages]
-    inquiry, _ = await create_inquiry(
-        session, account.id, "public_web", fields.inquiry, raw, llm
-    )
-    products = list(
-        (await session.scalars(select(Product).where(Product.brand == "LG").limit(10))).all()
+    raw = [message.model_dump() for message in payload.messages] + [
+        {"type": "intake_fields", "fields": fields.model_dump()}
+    ]
+    inquiry, _ = await create_inquiry(session, account.id, "public_web", fields.inquiry, raw, llm)
+    products = _relevant_products(
+        list(
+            (
+                await session.scalars(
+                    select(Product).where(Product.brand == "LG").order_by(Product.id)
+                )
+            ).all()
+        ),
+        fields,
     )
     product_data: list[dict[str, Any]] = [
         {
@@ -150,7 +187,9 @@ async def submit(
     ]
     analysis = None
     analysis_error = False
-    if llm:
+    if not product_data:
+        analysis = "등록된 제품 중 조건에 맞는 항목이 없어 담당자가 확인 후 안내드리겠습니다."
+    elif llm:
         try:
             analysis = await llm.text(analysis_prompt(fields.model_dump(), product_data))
         except Exception:  # noqa: BLE001 - inquiry is already safely committed

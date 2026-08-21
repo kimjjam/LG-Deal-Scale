@@ -1,13 +1,17 @@
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.models import Account, Assignment, Inquiry, Staff
+from app.models import Account, Assignment, Inquiry, Opportunity, Staff, Task
 from app.nl2sql import UnsafeQueryError, validate_sql
-from app.schemas import IntentResult
+from app.routes.accounts import create_account
+from app.schemas import AccountCreate, IntakeFields, IntentResult, normalize_phone
 from app.services import auto_assign, classify_intent, create_inquiry
 
 
@@ -36,9 +40,7 @@ def test_neon_url_uses_asyncpg_driver() -> None:
         ),
         _env_file=None,
     )
-    assert settings.database_url == (
-        "postgresql+asyncpg://user:pass@example.test/db?ssl=require"
-    )
+    assert settings.database_url == ("postgresql+asyncpg://user:pass@example.test/db?ssl=require")
 
 
 def test_readonly_url_is_derived_from_password() -> None:
@@ -48,8 +50,7 @@ def test_readonly_url_is_derived_from_password() -> None:
         _env_file=None,
     )
     assert settings.effective_database_readonly_url == (
-        "postgresql+asyncpg://directdesk_readonly:readonly%20password@"
-        "example.test/db?ssl=require"
+        "postgresql+asyncpg://directdesk_readonly:readonly%20password@example.test/db?ssl=require"
     )
 
 
@@ -77,6 +78,45 @@ async def test_existing_open_account_inquiry_keeps_assignee(session: AsyncSessio
     assert assignment.assignee_id == rep.id
 
 
+@pytest.mark.asyncio
+async def test_auto_assign_falls_back_when_latest_prior_assignee_is_inactive(
+    session: AsyncSession,
+) -> None:
+    active = Staff(
+        id=uuid.uuid4(),
+        name="활성 담당자",
+        email="active-fallback@example.test",
+        hashed_password="not-used",
+        role="rep",
+    )
+    inactive = Staff(
+        id=uuid.uuid4(),
+        name="비활성 담당자",
+        email="inactive-fallback@example.test",
+        hashed_password="not-used",
+        role="rep",
+        is_active=False,
+    )
+    account = Account(name="배정 테스트", phone="01000000001", attributes={})
+    session.add_all([active, inactive, account])
+    await session.flush()
+    prior = Inquiry(account_id=account.id, channel="web", content="이전", status="routed")
+    current = Inquiry(account_id=account.id, channel="web", content="현재")
+    session.add_all([prior, current])
+    await session.flush()
+    session.add_all(
+        [
+            Assignment(inquiry_id=prior.id, assignee_id=active.id, method="manual"),
+            Assignment(inquiry_id=prior.id, assignee_id=inactive.id, method="manual"),
+        ]
+    )
+    await session.flush()
+
+    assignment = await auto_assign(session, current)
+
+    assert assignment.assignee_id == active.id
+
+
 @pytest.mark.parametrize(
     "sql",
     [
@@ -85,12 +125,102 @@ async def test_existing_open_account_inquiry_keeps_assignee(session: AsyncSessio
         "UPDATE accounts SET name = 'x'",
         "INSERT INTO accounts (name) VALUES ('x')",
         "SELECT * FROM accounts; DROP TABLE accounts",
+        "SELECT accounts.* FROM accounts",
+        "SELECT pg_sleep(10) FROM accounts",
+        "SELECT accounts.name FROM arbitrary.accounts",
         "SELECT secret_column FROM accounts",
     ],
 )
 def test_nl2sql_rejects_dangerous_queries(sql: str) -> None:
     with pytest.raises(UnsafeQueryError):
         validate_sql(sql)
+
+
+def test_phone_normalization() -> None:
+    assert normalize_phone("010-1234-5678") == "01012345678"
+    assert normalize_phone("010-1234-５６７８") == "0101234"
+    assert IntakeFields(phone="010 9876 5432").phone == "01098765432"
+    with pytest.raises(ValueError):
+        normalize_phone("12-34")
+
+
+def test_migration_checks_phone_length_before_normalizing() -> None:
+    source = (Path(__file__).parents[1] / "alembic" / "versions" / "0003_crm_core.py").read_text(
+        encoding="utf-8"
+    )
+    account_check = "normalized values must contain 7 to 15 digits"
+    contact_check = "non-null normalized values must contain 7 to 15 digits"
+    assert "NOT BETWEEN 7 AND 15" in source
+    assert source.index(account_check) < source.index("UPDATE accounts SET phone")
+    assert source.index(contact_check) < source.index("UPDATE contacts SET phone")
+
+
+def test_nl2sql_allows_public_date_trunc() -> None:
+    sql = validate_sql("SELECT DATE_TRUNC('month', accounts.created_at) FROM public.accounts")
+    assert "DATE_TRUNC" in sql
+
+
+@pytest.mark.asyncio
+async def test_account_create_normalizes_phone(session: AsyncSession) -> None:
+    staff = Staff(
+        id=uuid.uuid4(),
+        name="담당자",
+        email="normalize@example.test",
+        hashed_password="not-used",
+        role="rep",
+    )
+    session.add(staff)
+    account = await create_account(
+        AccountCreate(name="가상호텔", phone="010-9876-5432"), session, staff
+    )
+    assert account.phone == "01098765432"
+
+
+@pytest.mark.asyncio
+async def test_opportunity_probability_constraint(session: AsyncSession) -> None:
+    staff = Staff(
+        id=uuid.uuid4(),
+        name="담당자",
+        email="opportunity@example.test",
+        hashed_password="not-used",
+        role="rep",
+    )
+    account = Account(name="가상모텔", phone="01033334444", attributes={})
+    session.add_all([staff, account])
+    await session.flush()
+    opportunity = Opportunity(
+        account_id=account.id,
+        assignee_id=staff.id,
+        title="객실 가전 교체",
+        probability=101,
+    )
+    session.add(opportunity)
+    with pytest.raises(IntegrityError):
+        await session.commit()
+    await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_task_model_defaults(session: AsyncSession) -> None:
+    staff = Staff(
+        id=uuid.uuid4(),
+        name="담당자",
+        email="task@example.test",
+        hashed_password="not-used",
+        role="rep",
+    )
+    account = Account(name="가상펜션", phone="01055556666", attributes={})
+    session.add_all([staff, account])
+    await session.flush()
+    task = Task(
+        account_id=account.id,
+        assignee_id=staff.id,
+        title="견적 전화",
+        due_at=datetime.now(timezone.utc),
+    )
+    session.add(task)
+    await session.commit()
+    assert task.status == "pending"
 
 
 @pytest.mark.asyncio
