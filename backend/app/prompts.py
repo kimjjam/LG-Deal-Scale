@@ -13,7 +13,7 @@ def intent_prompt(content: str) -> str:
 
 def intake_prompt(messages: list[dict[str, str]], fields: dict[str, Any]) -> str:
     return (
-        "당신은 가상 가전 공급사 다온비즈의 상담 접수 도우미입니다. 제품 FAQ에 답하지 말고 상담에 필요한 "
+        "당신은 LG Deal Scale의 상담 접수 도우미입니다. 제품 FAQ에 답하지 말고 상담에 필요한 "
         "업체명, 연락처, 문의내용, 업종, 규모, 필요제품, 수량, 위치, 구매 단계, 구매 시기를 자연스럽게 한 번에 "
         "한두 항목씩 물어보세요. 구매 단계는 견적 요청/모델 비교/정보 수집, 시기는 즉시/1개월 이내/3개월 이내/미정 중 "
         "하나로 정규화하세요. 규모는 숙박업은 room_count, 음식점·카페는 seat_count, 사무실은 employee_count, "
@@ -50,7 +50,7 @@ def outbound_prompt(
     previous_draft: dict[str, str] | None = None,
 ) -> str:
     return (
-        "가상 공급사 다온비즈 직원이 검토할 B2B 이메일 초안을 JSON subject/body로 작성하세요. 실제 발송 "
+        "LG Deal Scale 직원이 검토할 B2B 이메일 초안을 JSON subject/body로 작성하세요. 실제 발송 "
         "전 검토용이며 과장, 없는 사양, 수신 동의가 있다는 표현을 쓰지 마세요.\n"
         f"시퀀스 단계: {sequence_step}\n리드: {json.dumps(lead, ensure_ascii=False, default=str)}\n"
         f"이전 초안: {json.dumps(previous_draft, ensure_ascii=False) if previous_draft else '없음'}\n"

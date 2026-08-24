@@ -6,7 +6,7 @@ import type { ChatMessage, ChatTurn, IntakeFields, PublicResult } from "../types
 const INITIAL_MESSAGES: ChatMessage[] = [
   {
     role: "assistant",
-    content: "안녕하세요. 다온비즈 AI 상담입니다. 업체명과 필요한 가전을 편하게 말씀해주세요."
+    content: "안녕하세요. LG Deal Scale AI 상담입니다. 업체명과 필요한 가전을 편하게 말씀해주세요."
   }
 ];
 

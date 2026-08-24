@@ -75,9 +75,9 @@ export default function InternalApp() {
   return (
     <div className="internal-shell">
       <nav className="sidebar" aria-label="주요 메뉴">
-        <a className="internal-brand" href="/" aria-label="DirectDesk 홈">
-          <span className="brand-symbol small" aria-hidden="true">D</span>
-          <span className="brand-copy"><strong>DirectDesk</strong><small>DAONBIZ SALES</small></span>
+        <a className="internal-brand" href="/" aria-label="LG Deal Scale 홈">
+          <span className="brand-symbol small" aria-hidden="true">LG</span>
+          <span className="brand-copy"><strong>LG Deal Scale</strong><small>SALES WORKSPACE</small></span>
         </a>
 
         <div className="nav-group">
@@ -105,7 +105,7 @@ export default function InternalApp() {
       <div className="internal-main">
         <header className="topbar">
           <div className="topbar-context">
-            <span className="mobile-brand-symbol" aria-hidden="true">D</span>
+            <span className="mobile-brand-symbol" aria-hidden="true">LG</span>
             <div><strong>{activeItem.label}</strong><span>{activeItem.description}</span></div>
           </div>
           <div className="user-menu">
