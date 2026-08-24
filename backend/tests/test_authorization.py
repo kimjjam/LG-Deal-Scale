@@ -45,10 +45,15 @@ from app.security import get_current_staff, require_owner, verify_password
 
 
 class ApiStatusResponse:
+    def __init__(self, building: bool = False) -> None:
+        self.building = building
+
     def raise_for_status(self) -> None:
         pass
 
     def json(self) -> dict[str, object]:
+        if self.building:
+            return {"response": {"header": {"resultCode": "00"}}}
         return {"header": {"resultCode": "00"}}
 
 
@@ -59,8 +64,8 @@ class ApiStatusClient:
     async def __aexit__(self, *_args: object) -> None:
         pass
 
-    async def get(self, _url: str, **_kwargs: object) -> ApiStatusResponse:
-        return ApiStatusResponse()
+    async def get(self, url: str, **_kwargs: object) -> ApiStatusResponse:
+        return ApiStatusResponse("BldRgstHubService" in url)
 
 
 def test_rep_manual_assignment_returns_403() -> None:
@@ -509,6 +514,7 @@ async def test_owner_api_status_does_not_expose_secrets(
         "app.routes.admin.get_settings",
         lambda: SimpleNamespace(
             data_go_kr_service_key="public-data-secret",
+            effective_building_hub_api_key="building-secret",
             gemini_api_key="gemini-secret",
             naver_client_id="naver-id",
             naver_client_secret="naver-secret",
@@ -526,5 +532,6 @@ async def test_owner_api_status_does_not_expose_secrets(
     assert all(service["status"] in {"available", "configured"} for service in result["services"])
     serialized = str(result)
     assert "public-data-secret" not in serialized
+    assert "building-secret" not in serialized
     assert "gemini-secret" not in serialized
     assert "naver-secret" not in serialized

@@ -227,6 +227,7 @@ export interface Lead {
   name: string;
   address?: string | null;
   business_type?: string | null;
+  source: string;
   lead_score: number;
   reasoning: Record<string, string>;
   pipeline_stage: string;

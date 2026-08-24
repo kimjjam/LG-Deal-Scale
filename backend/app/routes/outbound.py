@@ -15,7 +15,14 @@ from app.audit import record_audit
 from app.config import get_settings
 from app.database import get_session
 from app.llm import get_llm_client
-from app.localdata import SBIZ_LODGING_CODE, SBIZ_STORE_URL, parse_sbiz_rows
+from app.localdata import (
+    BUILDING_TITLE_URL,
+    SBIZ_STORE_URL,
+    building_age_score,
+    building_query_from_sbiz,
+    parse_building_title,
+    parse_sbiz_rows,
+)
 from app.models import (
     Account,
     Lead,
@@ -102,7 +109,6 @@ async def sync_sbiz_leads(
                     "numOfRows": payload.rows,
                     "divId": "ctprvnCd",
                     "key": payload.region_code,
-                    "indsLclsCd": SBIZ_LODGING_CODE,
                     "type": "json",
                 },
             )
@@ -148,6 +154,57 @@ async def sync_sbiz_leads(
     }
 
 
+@router.post("/leads/{lead_id}/enrich-building")
+async def enrich_lead_building(
+    lead_id: int, session: Session, staff: ManagerStaff
+) -> dict[str, object]:
+    lead = await session.get(Lead, lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="잠재고객을 찾을 수 없습니다.")
+    if lead.source != "sbiz":
+        raise HTTPException(status_code=422, detail="상가정보에서 가져온 리드만 보강할 수 있습니다.")
+    try:
+        query = building_query_from_sbiz(lead.raw_data)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    service_key = get_settings().effective_building_hub_api_key
+    if not service_key:
+        raise HTTPException(status_code=503, detail="BUILDING_HUB_API_KEY가 설정되지 않았습니다.")
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(
+                BUILDING_TITLE_URL,
+                params={"serviceKey": service_key, **query},
+            )
+            response.raise_for_status()
+            building = parse_building_title(response.json())
+    except (httpx.HTTPError, TypeError, ValueError) as error:
+        raise HTTPException(status_code=502, detail="건축물대장 정보를 불러오지 못했습니다.") from error
+
+    approval_date = date.fromisoformat(str(building["approval_date"]))
+    score, reason = building_age_score(approval_date)
+    raw_data = dict(lead.raw_data)
+    raw_data["building_register"] = building
+    reasoning = dict(lead.lead_score_reasoning)
+    reasoning.pop("business_type", None)
+    reasoning["source_data"] = (
+        "상가정보로 업체 존재와 업종을 확인했으며 업종은 노후도 점수에 반영하지 않았습니다."
+    )
+    reasoning["building_age"] = reason
+    lead.raw_data = raw_data
+    lead.lead_score = score
+    lead.lead_score_reasoning = reasoning
+    lead.lead_scoring_version = "v3"
+    record_audit(session, staff, "lead.building_enrich", "lead", str(lead.id), {"score": score})
+    await session.commit()
+    return {
+        "id": lead.id,
+        "lead_score": lead.lead_score,
+        "reasoning": lead.lead_score_reasoning,
+    }
+
+
 @router.get("/leads")
 async def list_leads(
     session: Session,
@@ -175,6 +232,7 @@ async def list_leads(
             "name": lead.name,
             "address": lead.address,
             "business_type": lead.business_type,
+            "source": lead.source,
             "lead_score": lead.lead_score,
             "reasoning": lead.lead_score_reasoning,
             "pipeline_stage": lead.pipeline_stage,

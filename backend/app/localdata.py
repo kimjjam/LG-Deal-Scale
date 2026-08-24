@@ -1,9 +1,9 @@
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
 
 SERVICE_ID = "03_11_03_P"
 SBIZ_STORE_URL = "https://apis.data.go.kr/B553077/api/open/sdsc2/storeListInDong"
-SBIZ_LODGING_CODE = "I1"
+BUILDING_TITLE_URL = "https://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo"
 
 
 def _date(value: object) -> date | None:
@@ -57,14 +57,89 @@ def parse_localdata_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return parsed
 
 
-def sbiz_lead_score(business_type: str) -> tuple[int, dict[str, str]]:
-    score = 80 if any(word in business_type for word in ("호텔", "모텔", "여관")) else 65
-    return score, {
-        "business_type": (
-            f"공공데이터의 업종 '{business_type}'을 기준으로 숙박업 가전 수요 적합도 "
-            f"{score}점을 부여했습니다. 개업일 정보는 제공되지 않아 업력은 반영하지 않았습니다."
+def sbiz_lead_score() -> tuple[int, dict[str, str]]:
+    return 50, {
+        "source_data": (
+            "상가정보로 존재와 업종을 확인했습니다. 업종만으로 노후도를 추정하지 않아 "
+            "건축물대장 확인 전에는 중립 점수 50점을 적용합니다."
         )
     }
+
+
+def building_query_from_sbiz(raw_data: dict[str, Any]) -> dict[str, str | int]:
+    legal_code = str(raw_data.get("ldongCd") or "").strip()
+    main_number = str(raw_data.get("lnoMnno") or "").strip()
+    sub_number = str(raw_data.get("lnoSlno") or "0").strip()
+    if len(legal_code) != 10 or not legal_code.isdigit():
+        raise ValueError("상가정보에 10자리 법정동 코드가 없습니다.")
+    if not main_number.isdigit() or not sub_number.isdigit():
+        raise ValueError("상가정보에 유효한 지번이 없습니다.")
+    mountain = str(raw_data.get("lnoCd") or "") == "2" or " 산" in str(
+        raw_data.get("lnoAdr") or ""
+    )
+    return {
+        "sigunguCd": legal_code[:5],
+        "bjdongCd": legal_code[5:],
+        "platGbCd": "1" if mountain else "0",
+        "bun": main_number.zfill(4),
+        "ji": sub_number.zfill(4),
+        "numOfRows": 100,
+        "pageNo": 1,
+        "_type": "json",
+    }
+
+
+def parse_building_title(payload: dict[str, Any]) -> dict[str, Any]:
+    response = payload.get("response", {})
+    header = response.get("header", {})
+    code = str(header.get("resultCode") or "").strip()
+    if code != "00":
+        raise ValueError(header.get("resultMsg") or f"건축물대장 API 오류: {code or '응답 코드 없음'}")
+    item = response.get("body", {}).get("items", {}).get("item", [])
+    rows = [item] if isinstance(item, dict) else item
+    if not isinstance(rows, list):
+        raise TypeError("건축물대장 응답 항목은 목록이어야 합니다.")
+    candidates = [row for row in rows if isinstance(row, dict) and row.get("useAprDay")]
+    if not candidates:
+        raise ValueError("해당 지번의 사용승인일을 찾지 못했습니다.")
+
+    def rank(row: dict[str, Any]) -> tuple[bool, float]:
+        try:
+            area = float(row.get("totArea") or 0)
+        except (TypeError, ValueError):
+            area = 0
+        return row.get("mainAtchGbCdNm") == "주건축물", area
+
+    selected = max(candidates, key=rank)
+    approval_date = _date(selected["useAprDay"])
+    if approval_date is None:
+        raise ValueError("사용승인일을 확인할 수 없습니다.")
+    return {
+        "approval_date": approval_date.isoformat(),
+        "building_name": selected.get("bldNm") or None,
+        "main_purpose": selected.get("mainPurpsCdNm") or None,
+        "total_area": selected.get("totArea") or None,
+        "source_row": selected,
+    }
+
+
+def building_age_score(approval_date: date, today: date | None = None) -> tuple[int, str]:
+    current = today or datetime.now(timezone.utc).date()
+    age = current.year - approval_date.year - (
+        (current.month, current.day) < (approval_date.month, approval_date.day)
+    )
+    if age >= 30:
+        score = 85
+    elif age >= 20:
+        score = 70
+    elif age >= 10:
+        score = 55
+    else:
+        score = 35
+    return score, (
+        f"건축물대장 사용승인일 {approval_date.isoformat()} 기준 건물 연식은 {age}년입니다. "
+        f"내부 상태를 확정할 수 없어 리모델링 필요가 아닌 교체·리모델링 잠재력 {score}점으로 산정했습니다."
+    )
 
 
 def parse_sbiz_rows(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
@@ -85,9 +160,12 @@ def parse_sbiz_rows(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], int]
         if not external_id or not name:
             raise ValueError(f"{index}번째 행에 상가업소번호 또는 상호명이 없습니다.")
         business_type = str(
-            row.get("indsSclsNm") or row.get("indsMclsNm") or row.get("indsLclsNm") or "숙박"
+            row.get("indsSclsNm")
+            or row.get("indsMclsNm")
+            or row.get("indsLclsNm")
+            or "업종 미상"
         ).strip()
-        score, reasoning = sbiz_lead_score(business_type)
+        score, reasoning = sbiz_lead_score()
         parsed.append(
             {
                 "external_id": external_id,

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import get_session
+from app.localdata import BUILDING_TITLE_URL
 from app.security import OwnerStaff
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -52,6 +53,46 @@ async def api_status(session: Session, _owner: OwnerStaff) -> dict[str, object]:
                 "name": "상가(상권)정보 API",
                 "status": "not_configured",
                 "detail": "DATA_GO_KR_SERVICE_KEY 미설정",
+            }
+        )
+
+    building_key = settings.effective_building_hub_api_key
+    if building_key:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.get(
+                    BUILDING_TITLE_URL,
+                    params={
+                        "serviceKey": building_key,
+                        "sigunguCd": "11680",
+                        "bjdongCd": "10100",
+                        "platGbCd": "0",
+                        "bun": "0825",
+                        "ji": "0000",
+                        "numOfRows": 1,
+                        "pageNo": 1,
+                        "_type": "json",
+                    },
+                )
+                response.raise_for_status()
+                result_code = str(
+                    response.json().get("response", {}).get("header", {}).get("resultCode") or ""
+                )
+                if result_code != "00":
+                    raise ValueError("건축물대장 인증 실패")
+            services.append(
+                {"name": "건축물대장정보 API", "status": "available", "detail": "연결 정상"}
+            )
+        except (httpx.HTTPError, TypeError, ValueError):
+            services.append(
+                {"name": "건축물대장정보 API", "status": "degraded", "detail": "연결 실패"}
+            )
+    else:
+        services.append(
+            {
+                "name": "건축물대장정보 API",
+                "status": "not_configured",
+                "detail": "BUILDING_HUB_API_KEY 또는 DATA_GO_KR_SERVICE_KEY 미설정",
             }
         )
 

@@ -46,6 +46,12 @@ interface SbizSyncResponse {
   total_count: number;
 }
 
+interface BuildingEnrichmentResponse {
+  id: number;
+  lead_score: number;
+  reasoning: Record<string, string>;
+}
+
 export default function Outbound({ session }: { session: Session }) {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [dashboard, setDashboard] = useState<OutboundDashboard | null>(null);
@@ -148,13 +154,28 @@ export default function Outbound({ session }: { session: Session }) {
         method: "POST",
         body: JSON.stringify({ region_code: syncRegion, page: syncPage, rows: 100 })
       }, session);
-      setSyncMessage(`숙박업소 ${result.fetched_count}건 확인 · 신규 ${result.created_count}건 · 갱신 ${result.updated_count}건 (지역 전체 ${result.total_count}건)`);
+      setSyncMessage(`상가 ${result.fetched_count}건 확인 · 신규 ${result.created_count}건 · 갱신 ${result.updated_count}건 (지역 전체 ${result.total_count}건)`);
       setOffset(0);
       setRefreshKey((value) => value + 1);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "공공데이터를 가져오지 못했습니다.");
     } finally {
       setSyncBusy(false);
+    }
+  }
+
+  async function enrichBuilding(leadId: number) {
+    setBusyAction("building");
+    setError("");
+    try {
+      const result = await api<BuildingEnrichmentResponse>(`/outbound/leads/${leadId}/enrich-building`, { method: "POST" }, session);
+      const update = (lead: Lead) => lead.id === result.id ? { ...lead, lead_score: result.lead_score, reasoning: result.reasoning } : lead;
+      setLeads((rows) => rows.map(update));
+      setSelected((lead) => lead ? update(lead) : lead);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "건축물 정보를 보강하지 못했습니다.");
+    } finally {
+      setBusyAction("");
     }
   }
 
@@ -281,7 +302,7 @@ export default function Outbound({ session }: { session: Session }) {
       {canManage ? <form className="compact-filter" onSubmit={(event) => { event.preventDefault(); void syncPublicLeads(); }}>
         <label>공공데이터 지역<select value={syncRegion} onChange={(event) => setSyncRegion(event.target.value)}>{REGIONS.map(([code, name]) => <option key={code} value={code}>{name}</option>)}</select></label>
         <label>페이지<input type="number" min="1" max="10000" value={syncPage} onChange={(event) => setSyncPage(Number(event.target.value))} /></label>
-        <button className="secondary-button" disabled={syncBusy}>{syncBusy ? "가져오는 중…" : "숙박업소 100건 가져오기"}</button>
+        <button className="secondary-button" disabled={syncBusy}>{syncBusy ? "가져오는 중…" : "상가 100건 가져오기"}</button>
       </form> : null}
       {syncMessage ? <p className="success notice" role="status">{syncMessage}</p> : null}
       <form className="compact-filter" onSubmit={(event) => { event.preventDefault(); setOffset(0); setSearch(searchInput.trim()); }}>
@@ -320,7 +341,7 @@ export default function Outbound({ session }: { session: Session }) {
             <div className="detail-meta"><span className={`status-badge stage-${selected.pipeline_stage}`}>{STAGE_LABELS[selected.pipeline_stage] ?? selected.pipeline_stage}</span><span>{selected.business_type ?? "업종 미상"}</span><span>{selected.address ?? "주소 미상"}</span></div>
             {canManage && !["converted", "dropped"].includes(selected.pipeline_stage) ? <section className="lead-actions" aria-labelledby="lead-stage-title"><h3 id="lead-stage-title">진행 관리</h3>{nextStages.length ? <label>다음 단계<select defaultValue="" disabled={Boolean(busyAction)} onChange={(event) => { if (event.target.value) void changeStage(selected.id, event.target.value); event.target.value = ""; }}><option value="">선택</option>{nextStages.map((nextStage) => <option key={nextStage} value={nextStage}>{STAGE_LABELS[nextStage]}</option>)}</select></label> : null}<details><summary>실제 접촉 기록</summary><div className="contact-form"><label>채널<select value={contactChannel} onChange={(event) => setContactChannel(event.target.value)}><option value="phone">전화</option><option value="email">이메일</option><option value="meeting">미팅</option><option value="other">기타</option></select></label><label>메모<textarea value={contactNote} onChange={(event) => setContactNote(event.target.value)} maxLength={1000} /></label><button className="primary" type="button" disabled={Boolean(busyAction)} onClick={() => void recordContact(selected.id)}>접촉 기록</button></div></details><button className="danger-button" type="button" disabled={Boolean(busyAction)} onClick={() => { if (window.confirm("이 리드의 아웃바운드 시퀀스를 종결할까요?")) void stopSequence(selected.id); }}>시퀀스 중단</button></section> : null}
             <section className="lead-score-card" aria-labelledby="lead-score-title">
-              <div><h3 id="lead-score-title">발굴 근거</h3></div>
+              <div><h3 id="lead-score-title">발굴 근거</h3>{canManage && selected.source === "sbiz" ? <button className="text-button" type="button" disabled={Boolean(busyAction)} onClick={() => void enrichBuilding(selected.id)}>{busyAction === "building" ? "확인 중…" : selected.reasoning.building_age ? "건물 정보 새로고침" : "건물 정보 보강"}</button> : null}</div>
               <strong>{selected.lead_score}<small>/100</small></strong>
             </section>
             <div className="lead-reasons">
@@ -378,7 +399,9 @@ function ModeNotice({ mode }: { mode: "dry_run" | "test_override" }) {
 function humanizeAxis(axis: string) {
   const labels: Record<string, string> = {
     years_in_business: "업력",
-    business_type: "업종 적합도"
+    business_type: "업종 적합도",
+    source_data: "상가정보",
+    building_age: "건물 연식"
   };
   return labels[axis] ?? axis.replaceAll("_", " ");
 }

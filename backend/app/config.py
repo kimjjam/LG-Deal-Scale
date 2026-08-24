@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     llm_model: str = "gemini-3.5-flash-lite"
     gemini_api_key: str | None = None
     data_go_kr_service_key: str | None = None
+    building_hub_api_key: str | None = None
     naver_client_id: str | None = None
     naver_client_secret: str | None = None
     outbound_email_mode: Literal["dry_run", "test_override"] = "dry_run"
@@ -37,6 +38,10 @@ class Settings(BaseSettings):
     owner_name: str | None = Field(default=None, min_length=1, max_length=100)
     owner_email: EmailStr | None = None
     owner_password: SecretStr | None = Field(default=None, min_length=12, max_length=128)
+
+    @property
+    def effective_building_hub_api_key(self) -> str | None:
+        return self.building_hub_api_key or self.data_go_kr_service_key
 
     @field_validator("database_url", "database_readonly_url", mode="before")
     @classmethod
