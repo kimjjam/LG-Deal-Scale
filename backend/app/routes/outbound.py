@@ -15,6 +15,7 @@ from app.audit import record_audit
 from app.config import get_settings
 from app.database import get_session
 from app.llm import get_llm_client
+from app.localdata import SBIZ_LODGING_CODE, SBIZ_STORE_URL, parse_sbiz_rows
 from app.models import (
     Account,
     Lead,
@@ -54,6 +55,12 @@ class DraftResult(BaseModel):
     body: str = Field(min_length=1, max_length=20_000)
 
 
+class SbizSyncRequest(BaseModel):
+    region_code: str = Field(pattern=r"^\d{2}$")
+    page: int = Field(default=1, ge=1, le=10_000)
+    rows: int = Field(default=100, ge=1, le=100)
+
+
 def csv_safe(value: object) -> object:
     dangerous = ("=", "+", "-", "@", "\t", "\r")
     return f"'{value}" if isinstance(value, str) and value.startswith(dangerous) else value
@@ -75,6 +82,69 @@ def draft_payload(draft: OutboundDraft) -> dict[str, object]:
         "reviewed": draft.reviewed_by is not None,
         "send_mode": draft.send_mode,
         "sent_at": draft.sent_at,
+    }
+
+
+@router.post("/leads/sync-sbiz")
+async def sync_sbiz_leads(
+    payload: SbizSyncRequest, session: Session, staff: ManagerStaff
+) -> dict[str, int]:
+    service_key = get_settings().data_go_kr_service_key
+    if not service_key:
+        raise HTTPException(status_code=503, detail="DATA_GO_KR_SERVICE_KEY가 설정되지 않았습니다.")
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(
+                SBIZ_STORE_URL,
+                params={
+                    "serviceKey": service_key,
+                    "pageNo": payload.page,
+                    "numOfRows": payload.rows,
+                    "divId": "ctprvnCd",
+                    "key": payload.region_code,
+                    "indsLclsCd": SBIZ_LODGING_CODE,
+                    "type": "json",
+                },
+            )
+            response.raise_for_status()
+            rows, total_count = parse_sbiz_rows(response.json())
+    except (httpx.HTTPError, TypeError, ValueError) as error:
+        raise HTTPException(status_code=502, detail="상가정보 API를 불러오지 못했습니다.") from error
+
+    external_ids = [row["external_id"] for row in rows]
+    existing = {
+        lead.external_id: lead
+        for lead in (
+            await session.scalars(select(Lead).where(Lead.external_id.in_(external_ids)))
+        ).all()
+    }
+    created = 0
+    for row in rows:
+        lead = existing.get(row["external_id"])
+        if lead:
+            for field, value in row.items():
+                setattr(lead, field, value)
+            continue
+        session.add(Lead(**row))
+        created += 1
+    try:
+        record_audit(
+            session,
+            staff,
+            "lead.sbiz_sync",
+            "lead",
+            "bulk",
+            {"region_code": payload.region_code, "page": payload.page, "fetched": len(rows)},
+        )
+        await session.commit()
+    except IntegrityError as error:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail="동시에 같은 공공데이터 리드가 저장되었습니다.") from error
+    return {
+        "fetched_count": len(rows),
+        "created_count": created,
+        "updated_count": len(rows) - created,
+        "total_count": total_count,
     }
 
 

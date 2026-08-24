@@ -18,6 +18,7 @@ def test_sqlite_phase4_migration_round_trip(
             PRAGMA foreign_keys=ON;
             CREATE TABLE accounts (id INTEGER PRIMARY KEY);
             CREATE TABLE staff (id CHAR(32) PRIMARY KEY);
+            CREATE TABLE leads (id INTEGER PRIMARY KEY);
             CREATE TABLE products (
                 id INTEGER PRIMARY KEY, name VARCHAR(200) NOT NULL,
                 brand VARCHAR(100) NOT NULL, category VARCHAR(100) NOT NULL,
@@ -52,7 +53,7 @@ def test_sqlite_phase4_migration_round_trip(
         command.upgrade(config, "head")
         with sqlite3.connect(database) as connection:
             assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-                "0006",
+                "0007",
             )
             with pytest.raises(sqlite3.IntegrityError):
                 connection.execute(

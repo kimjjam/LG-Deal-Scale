@@ -17,6 +17,13 @@ const STAGE_LABELS: Record<string, string> = {
 };
 
 const PAGE_SIZE = 25;
+const REGIONS = [
+  ["11", "서울"], ["26", "부산"], ["27", "대구"], ["28", "인천"],
+  ["29", "광주"], ["30", "대전"], ["31", "울산"], ["36", "세종"],
+  ["41", "경기"], ["43", "충북"], ["44", "충남"], ["46", "전남"],
+  ["47", "경북"], ["48", "경남"], ["50", "제주"],
+  ["51", "강원특별자치도"], ["52", "전북특별자치도"]
+] as const;
 
 const NEXT_STAGES: Record<string, string[]> = {
   discovered: ["draft_generated", "dropped"],
@@ -30,6 +37,13 @@ interface SendResponse {
   id: number;
   mode: "dry_run" | "test_override";
   sent_at: string;
+}
+
+interface SbizSyncResponse {
+  fetched_count: number;
+  created_count: number;
+  updated_count: number;
+  total_count: number;
 }
 
 export default function Outbound({ session }: { session: Session }) {
@@ -53,6 +67,10 @@ export default function Outbound({ session }: { session: Session }) {
   const [offset, setOffset] = useState(0);
   const [hasNext, setHasNext] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [syncRegion, setSyncRegion] = useState("11");
+  const [syncPage, setSyncPage] = useState(1);
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [syncMessage, setSyncMessage] = useState("");
   const canManage = session.role !== "rep";
   const selectedId = selected?.id;
 
@@ -119,6 +137,25 @@ export default function Outbound({ session }: { session: Session }) {
 
   async function refreshDashboard() {
     setDashboard(await api<OutboundDashboard>("/outbound/dashboard", {}, session));
+  }
+
+  async function syncPublicLeads() {
+    setSyncBusy(true);
+    setSyncMessage("");
+    setError("");
+    try {
+      const result = await api<SbizSyncResponse>("/outbound/leads/sync-sbiz", {
+        method: "POST",
+        body: JSON.stringify({ region_code: syncRegion, page: syncPage, rows: 100 })
+      }, session);
+      setSyncMessage(`숙박업소 ${result.fetched_count}건 확인 · 신규 ${result.created_count}건 · 갱신 ${result.updated_count}건 (지역 전체 ${result.total_count}건)`);
+      setOffset(0);
+      setRefreshKey((value) => value + 1);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "공공데이터를 가져오지 못했습니다.");
+    } finally {
+      setSyncBusy(false);
+    }
   }
 
   async function generateDraft(leadId: number) {
@@ -241,6 +278,12 @@ export default function Outbound({ session }: { session: Session }) {
         <div><h1 id="leads-title">잠재고객</h1><p>리드 근거를 확인하고 검토된 메시지만 안전하게 다음 단계로 보냅니다.</p></div>
         <div className="command-actions">{canManage ? <CsvControls session={session} importPath="/outbound/leads/import" exportPath="/outbound/leads/export.csv" filename="leads.csv" onImported={() => { setOffset(0); setRefreshKey((value) => value + 1); }} /> : null}{dashboard ? <ModeChip mode={dashboard.outbound_email_mode} /> : null}<span className="count-chip">현재 페이지 {leads.length}개</span></div>
       </div>
+      {canManage ? <form className="compact-filter" onSubmit={(event) => { event.preventDefault(); void syncPublicLeads(); }}>
+        <label>공공데이터 지역<select value={syncRegion} onChange={(event) => setSyncRegion(event.target.value)}>{REGIONS.map(([code, name]) => <option key={code} value={code}>{name}</option>)}</select></label>
+        <label>페이지<input type="number" min="1" max="10000" value={syncPage} onChange={(event) => setSyncPage(Number(event.target.value))} /></label>
+        <button className="secondary-button" disabled={syncBusy}>{syncBusy ? "가져오는 중…" : "숙박업소 100건 가져오기"}</button>
+      </form> : null}
+      {syncMessage ? <p className="success notice" role="status">{syncMessage}</p> : null}
       <form className="compact-filter" onSubmit={(event) => { event.preventDefault(); setOffset(0); setSearch(searchInput.trim()); }}>
         <label>리드 검색<input value={searchInput} onChange={(event) => setSearchInput(event.target.value)} placeholder="업체명 또는 주소" /></label>
         <label>단계<select value={stage} onChange={(event) => { setStage(event.target.value); setOffset(0); }}><option value="">전체</option>{Object.entries(STAGE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>

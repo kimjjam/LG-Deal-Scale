@@ -48,11 +48,11 @@ $env:JWT_SECRET_KEY='32자 이상의 임의 값'
 $env:SEED_STAFF_PASSWORD='12자 이상의 데모 비밀번호'
 ```
 
-선택 기능은 `GEMINI_API_KEY`, `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET`, `OUTBOUND_EMAIL_MODE`, `TEST_EMAIL_ADDRESS`, `EMAIL_PROVIDER_API_KEY`를 사용합니다. `LOCALDATA_API_KEY`는 설정에 존재하지만 현재 실 API 동기화에는 사용하지 않습니다.
+선택 기능은 `GEMINI_API_KEY`, `DATA_GO_KR_SERVICE_KEY`, `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET`, `OUTBOUND_EMAIL_MODE`, `TEST_EMAIL_ADDRESS`, `EMAIL_PROVIDER_API_KEY`를 사용합니다.
 
 ### 마이그레이션과 시드
 
-Alembic 마이그레이션은 PostgreSQL 전용입니다. 아래 명령은 대상 DB와 백업을 확인한 뒤 사용자가 직접 실행해야 하며, 이 저장소 작업에서는 적용하지 않았습니다.
+Alembic 마이그레이션은 PostgreSQL 전용입니다. 아래 명령은 대상 DB와 백업을 확인한 뒤 실행하세요.
 
 ```powershell
 .\.venv\Scripts\alembic.exe upgrade head
@@ -105,9 +105,9 @@ npm run dev
 
 아웃바운드 화면은 리드 단계, 초안 검토율, 시퀀스 단계 분포와 현재 안전 발송 모드를 별도로 보여줍니다.
 
-## LOCALDATA 범위
+## 공공데이터 잠재고객
 
-`backend/app/localdata.py`에는 숙박업 서비스 ID `03_11_03_P`의 공식 응답 필드(`bplcNm`, `rdnWhlAddr`, `siteWhlAddr`, `apvPermYmd`, `uptaeNm` 등)를 정규화하는 순수 파서만 있습니다. 오류 응답, 빈 행 형태, 주소 폴백과 날짜를 검증하지만 API 호출·페이지 순회·전체 CSV 최초 적재·증분 동기화는 구현하지 않았습니다.
+잠재고객 화면은 소상공인시장진흥공단 상가(상권)정보 API의 지역별 숙박업소를 페이지당 100건씩 가져옵니다. 상가업소번호로 중복을 막고, API가 개업일을 제공하지 않으므로 리드 점수에는 업종 적합도만 반영합니다.
 
 ## 공개 문의 안전 경계
 

@@ -297,6 +297,7 @@ class Lead(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(200))
+    external_id: Mapped[str | None] = mapped_column(String(50), unique=True)
     address: Mapped[str | None] = mapped_column(String(500))
     license_date: Mapped[date | None] = mapped_column(Date)
     years_in_business: Mapped[int | None] = mapped_column(Integer)

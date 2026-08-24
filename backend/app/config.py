@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     llm_provider: Literal["google"] = "google"
     llm_model: str = "gemini-3.5-flash-lite"
     gemini_api_key: str | None = None
-    localdata_api_key: str | None = None
+    data_go_kr_service_key: str | None = None
     naver_client_id: str | None = None
     naver_client_secret: str | None = None
     outbound_email_mode: Literal["dry_run", "test_override"] = "dry_run"
