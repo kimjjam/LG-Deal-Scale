@@ -1,9 +1,10 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 SERVICE_ID = "03_11_03_P"
 SBIZ_STORE_URL = "https://apis.data.go.kr/B553077/api/open/sdsc2/storeListInDong"
 BUILDING_TITLE_URL = "https://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo"
+BUILDING_PERMIT_URL = "https://apis.data.go.kr/1613000/ArchPmsHubService/getApBasisOulnInfo"
 
 
 def _date(value: object) -> date | None:
@@ -123,6 +124,44 @@ def parse_building_title(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def parse_building_permits(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    response = payload.get("response", {})
+    header = response.get("header", {})
+    code = str(header.get("resultCode") or "").strip()
+    if code != "00":
+        raise ValueError(header.get("resultMsg") or f"건축인허가 API 오류: {code or '응답 코드 없음'}")
+    item = response.get("body", {}).get("items", {}).get("item", [])
+    rows = [item] if isinstance(item, dict) else item
+    if not isinstance(rows, list):
+        raise TypeError("건축인허가 응답 항목은 목록이어야 합니다.")
+    permits = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        kind = str(row.get("archGbCdNm") or "").strip()
+        if not any(word in kind for word in ("대수선", "증축", "개축", "재축", "용도변경")):
+            continue
+        date_field = next(
+            (
+                field
+                for field in ("useAprDay", "realStcnsDay", "archPmsDay", "crtnDay")
+                if row.get(field)
+            ),
+            None,
+        )
+        event_date = _date(row.get(date_field)) if date_field else None
+        permits.append(
+            {
+                "kind": kind,
+                "date": event_date.isoformat() if event_date else None,
+                "date_basis": date_field,
+                "building_name": row.get("bldNm") or None,
+                "source_row": row,
+            }
+        )
+    return sorted(permits, key=lambda permit: str(permit["date"] or ""), reverse=True)
+
+
 def building_age_score(approval_date: date, today: date | None = None) -> tuple[int, str]:
     current = today or datetime.now(timezone.utc).date()
     age = current.year - approval_date.year - (
@@ -139,6 +178,31 @@ def building_age_score(approval_date: date, today: date | None = None) -> tuple[
     return score, (
         f"건축물대장 사용승인일 {approval_date.isoformat()} 기준 건물 연식은 {age}년입니다. "
         f"내부 상태를 확정할 수 없어 리모델링 필요가 아닌 교체·리모델링 잠재력 {score}점으로 산정했습니다."
+    )
+
+
+def apply_recent_major_repair(
+    base_score: int, permits: list[dict[str, Any]], today: date | None = None
+) -> tuple[int, str]:
+    current = today or datetime.now(timezone.utc).date()
+    cutoff = current - timedelta(days=365 * 5)
+    recent = [
+        permit
+        for permit in permits
+        if "대수선" in str(permit.get("kind") or "")
+        and permit.get("date")
+        and date.fromisoformat(str(permit["date"])) >= cutoff
+    ]
+    if not recent:
+        return base_score, (
+            "최근 5년 내 공식 대수선 기록을 찾지 못해 건물 연식 점수를 유지했습니다. "
+            "기록이 없다는 사실이 내부 리모델링을 하지 않았다는 뜻은 아닙니다."
+        )
+    latest = recent[0]
+    score = max(20, base_score - 30)
+    return score, (
+        f"{latest['date']} 공식 대수선 기록을 확인해 건물 연식 점수 {base_score}점에서 "
+        f"30점을 낮춘 {score}점으로 산정했습니다."
     )
 
 

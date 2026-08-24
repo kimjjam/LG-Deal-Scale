@@ -50,6 +50,7 @@ interface BuildingEnrichmentResponse {
   id: number;
   lead_score: number;
   reasoning: Record<string, string>;
+  evidence: NonNullable<Lead["evidence"]>;
 }
 
 export default function Outbound({ session }: { session: Session }) {
@@ -169,7 +170,7 @@ export default function Outbound({ session }: { session: Session }) {
     setError("");
     try {
       const result = await api<BuildingEnrichmentResponse>(`/outbound/leads/${leadId}/enrich-building`, { method: "POST" }, session);
-      const update = (lead: Lead) => lead.id === result.id ? { ...lead, lead_score: result.lead_score, reasoning: result.reasoning } : lead;
+      const update = (lead: Lead) => lead.id === result.id ? { ...lead, lead_score: result.lead_score, reasoning: result.reasoning, evidence: result.evidence } : lead;
       setLeads((rows) => rows.map(update));
       setSelected((lead) => lead ? update(lead) : lead);
     } catch (requestError) {
@@ -341,12 +342,16 @@ export default function Outbound({ session }: { session: Session }) {
             <div className="detail-meta"><span className={`status-badge stage-${selected.pipeline_stage}`}>{STAGE_LABELS[selected.pipeline_stage] ?? selected.pipeline_stage}</span><span>{selected.business_type ?? "업종 미상"}</span><span>{selected.address ?? "주소 미상"}</span></div>
             {canManage && !["converted", "dropped"].includes(selected.pipeline_stage) ? <section className="lead-actions" aria-labelledby="lead-stage-title"><h3 id="lead-stage-title">진행 관리</h3>{nextStages.length ? <label>다음 단계<select defaultValue="" disabled={Boolean(busyAction)} onChange={(event) => { if (event.target.value) void changeStage(selected.id, event.target.value); event.target.value = ""; }}><option value="">선택</option>{nextStages.map((nextStage) => <option key={nextStage} value={nextStage}>{STAGE_LABELS[nextStage]}</option>)}</select></label> : null}<details><summary>실제 접촉 기록</summary><div className="contact-form"><label>채널<select value={contactChannel} onChange={(event) => setContactChannel(event.target.value)}><option value="phone">전화</option><option value="email">이메일</option><option value="meeting">미팅</option><option value="other">기타</option></select></label><label>메모<textarea value={contactNote} onChange={(event) => setContactNote(event.target.value)} maxLength={1000} /></label><button className="primary" type="button" disabled={Boolean(busyAction)} onClick={() => void recordContact(selected.id)}>접촉 기록</button></div></details><button className="danger-button" type="button" disabled={Boolean(busyAction)} onClick={() => { if (window.confirm("이 리드의 아웃바운드 시퀀스를 종결할까요?")) void stopSequence(selected.id); }}>시퀀스 중단</button></section> : null}
             <section className="lead-score-card" aria-labelledby="lead-score-title">
-              <div><h3 id="lead-score-title">발굴 근거</h3>{canManage && selected.source === "sbiz" ? <button className="text-button" type="button" disabled={Boolean(busyAction)} onClick={() => void enrichBuilding(selected.id)}>{busyAction === "building" ? "확인 중…" : selected.reasoning.building_age ? "건물 정보 새로고침" : "건물 정보 보강"}</button> : null}</div>
+              <div><h3 id="lead-score-title">리드 우선순위</h3>{canManage && selected.source === "sbiz" ? <button className="text-button" type="button" disabled={Boolean(busyAction)} onClick={() => void enrichBuilding(selected.id)}>{busyAction === "building" ? "확인 중…" : selected.reasoning.building_age ? "판단근거 새로고침" : "판단근거 보강"}</button> : null}</div>
               <strong>{selected.lead_score}<small>/100</small></strong>
             </section>
+            <div className="section-heading compact"><h3>점수 산정 근거</h3><span>{selected.lead_score}점 판단 기준</span></div>
+            {selected.reasoning.business_type ? <p className="notice">이 점수는 이전 업종 기준입니다. 판단근거를 보강하면 건물 연식과 공식 대수선 이력으로 다시 산정됩니다.</p> : null}
             <div className="lead-reasons">
               {Object.entries(selected.reasoning).map(([axis, reason]) => <div key={axis}><strong>{humanizeAxis(axis)}</strong><p>{reason}</p></div>)}
             </div>
+            {selected.evidence?.official_permits?.length ? <section className="evidence-list" aria-labelledby="permit-evidence-title"><h3 id="permit-evidence-title">공식 인허가 기록</h3><ul>{selected.evidence.official_permits.map((permit, index) => <li key={`${permit.kind}-${permit.date}-${index}`}><strong>{permit.kind ?? "건축 행위"}</strong><span>{permit.date ?? "날짜 미상"}{permit.building_name ? ` · ${permit.building_name}` : ""}</span></li>)}</ul></section> : null}
+            {selected.evidence?.online_mentions?.length ? <section className="evidence-list" aria-labelledby="online-evidence-title"><h3 id="online-evidence-title">온라인 리뉴얼 정황</h3><ul>{selected.evidence.online_mentions.map((mention) => <li key={mention.link}><a href={mention.link} target="_blank" rel="noreferrer">{mention.title}</a><span>{mention.source}{mention.published_at ? ` · ${mention.published_at}` : " · 날짜 미상"}</span></li>)}</ul></section> : null}
 
             <section className="draft-workflow" aria-labelledby="draft-title">
               <div className="section-heading compact">
@@ -401,7 +406,9 @@ function humanizeAxis(axis: string) {
     years_in_business: "업력",
     business_type: "업종 적합도",
     source_data: "상가정보",
-    building_age: "건물 연식"
+    building_age: "건물 연식",
+    official_permit: "공식 인허가",
+    online_renovation: "온라인 정황"
   };
   return labels[axis] ?? axis.replaceAll("_", " ");
 }

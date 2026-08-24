@@ -1,8 +1,11 @@
 import csv
+import html
 import io
 import json
+import re
 from datetime import date, datetime, timezone
 from typing import Annotated
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -16,10 +19,13 @@ from app.config import get_settings
 from app.database import get_session
 from app.llm import get_llm_client
 from app.localdata import (
+    BUILDING_PERMIT_URL,
     BUILDING_TITLE_URL,
     SBIZ_STORE_URL,
+    apply_recent_major_repair,
     building_age_score,
     building_query_from_sbiz,
+    parse_building_permits,
     parse_building_title,
     parse_sbiz_rows,
 )
@@ -66,6 +72,66 @@ class SbizSyncRequest(BaseModel):
     region_code: str = Field(pattern=r"^\d{2}$")
     page: int = Field(default=1, ge=1, le=10_000)
     rows: int = Field(default=100, ge=1, le=100)
+
+
+def renovation_evidence(lead: Lead) -> dict[str, object]:
+    evidence = lead.raw_data.get("renovation_evidence", {})
+    return evidence if isinstance(evidence, dict) else {}
+
+
+def parse_naver_mentions(payload: dict[str, object], source: str) -> list[dict[str, str | None]]:
+    items = payload.get("items", [])
+    if not isinstance(items, list):
+        raise TypeError("네이버 검색 결과는 목록이어야 합니다.")
+    mentions = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        title = html.unescape(re.sub(r"<[^>]+>", "", str(item.get("title") or ""))).strip()
+        description = html.unescape(
+            re.sub(r"<[^>]+>", "", str(item.get("description") or ""))
+        ).strip()
+        link = str(item.get("link") or "").strip()
+        if not title or not any(
+            keyword in f"{title} {description}"
+            for keyword in ("리모델링", "리뉴얼", "새단장", "재오픈")
+        ):
+            continue
+        if urlsplit(link).scheme not in {"http", "https"}:
+            continue
+        postdate = str(item.get("postdate") or "").strip()
+        published_at = (
+            f"{postdate[:4]}-{postdate[4:6]}-{postdate[6:]}"
+            if len(postdate) == 8 and postdate.isdigit()
+            else None
+        )
+        mentions.append(
+            {
+                "source": source,
+                "title": title,
+                "description": description,
+                "link": link,
+                "published_at": published_at,
+            }
+        )
+    return mentions
+
+
+async def search_renovation_mentions(
+    client: httpx.AsyncClient, name: str, address: str | None, client_id: str, client_secret: str
+) -> list[dict[str, str | None]]:
+    headers = {"X-Naver-Client-Id": client_id, "X-Naver-Client-Secret": client_secret}
+    query = f"{name} {address or ''} 리모델링 리뉴얼 새단장 재오픈"
+    mentions: list[dict[str, str | None]] = []
+    for endpoint, source in (("blog.json", "네이버 블로그"), ("webkr.json", "네이버 웹문서")):
+        response = await client.get(
+            f"https://openapi.naver.com/v1/search/{endpoint}",
+            params={"query": query, "display": 5, **({"sort": "date"} if source.endswith("블로그") else {})},
+            headers=headers,
+        )
+        response.raise_for_status()
+        mentions.extend(parse_naver_mentions(response.json(), source))
+    return list({mention["link"]: mention for mention in mentions}.values())[:5]
 
 
 def csv_safe(value: object) -> object:
@@ -168,9 +234,14 @@ async def enrich_lead_building(
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
-    service_key = get_settings().effective_building_hub_api_key
+    settings = get_settings()
+    service_key = settings.effective_building_hub_api_key
     if not service_key:
         raise HTTPException(status_code=503, detail="BUILDING_HUB_API_KEY가 설정되지 않았습니다.")
+    permits: list[dict[str, object]] = []
+    permit_status = "failed"
+    mentions: list[dict[str, str | None]] = []
+    naver_status = "not_configured"
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.get(
@@ -179,29 +250,83 @@ async def enrich_lead_building(
             )
             response.raise_for_status()
             building = parse_building_title(response.json())
+            try:
+                permit_response = await client.get(
+                    BUILDING_PERMIT_URL,
+                    params={"serviceKey": service_key, **query},
+                )
+                permit_response.raise_for_status()
+                permits = parse_building_permits(permit_response.json())
+                permit_status = "success"
+            except (httpx.HTTPError, TypeError, ValueError):
+                permit_status = "failed"
+            naver_id = getattr(settings, "naver_client_id", None)
+            naver_secret = getattr(settings, "naver_client_secret", None)
+            if naver_id and naver_secret:
+                try:
+                    mentions = await search_renovation_mentions(
+                        client, lead.name, lead.address, naver_id, naver_secret
+                    )
+                    naver_status = "success"
+                except (httpx.HTTPError, TypeError, ValueError):
+                    naver_status = "failed"
     except (httpx.HTTPError, TypeError, ValueError) as error:
         raise HTTPException(status_code=502, detail="건축물대장 정보를 불러오지 못했습니다.") from error
 
     approval_date = date.fromisoformat(str(building["approval_date"]))
-    score, reason = building_age_score(approval_date)
+    base_score, reason = building_age_score(approval_date)
+    if permit_status == "success":
+        score, permit_reason = apply_recent_major_repair(base_score, permits)
+    else:
+        score = base_score
+        permit_reason = "건축인허가 정보를 확인하지 못해 공식 대수선 이력은 점수에 반영하지 않았습니다."
+    if naver_status == "success" and mentions:
+        mention_titles = ", ".join(f"‘{mention['title']}’" for mention in mentions[:3])
+        online_reason = (
+            f"리모델링 관련 공개 검색 후보 {len(mentions)}건을 찾았습니다: {mention_titles}. "
+            "동일 상호나 광고 글일 수 있어 점수에는 반영하지 않고 담당자 확인 자료로만 표시합니다."
+        )
+    elif naver_status == "success":
+        online_reason = (
+            "리모델링·리뉴얼 관련 공개 검색 결과를 찾지 못했습니다. "
+            "검색 결과가 없다는 사실이 리모델링을 하지 않았다는 뜻은 아닙니다."
+        )
+    elif naver_status == "not_configured":
+        online_reason = "네이버 검색 API가 설정되지 않아 온라인 리뉴얼 정황을 확인하지 않았습니다."
+    else:
+        online_reason = "네이버 검색을 완료하지 못해 온라인 리뉴얼 정황은 점수에 반영하지 않았습니다."
+    evidence = {
+        "permit_status": permit_status,
+        "official_permits": [
+            {key: permit.get(key) for key in ("kind", "date", "date_basis", "building_name")}
+            for permit in permits
+        ],
+        "naver_status": naver_status,
+        "online_mentions": mentions,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
     raw_data = dict(lead.raw_data)
     raw_data["building_register"] = building
+    raw_data["renovation_evidence"] = evidence
     reasoning = dict(lead.lead_score_reasoning)
     reasoning.pop("business_type", None)
     reasoning["source_data"] = (
         "상가정보로 업체 존재와 업종을 확인했으며 업종은 노후도 점수에 반영하지 않았습니다."
     )
     reasoning["building_age"] = reason
+    reasoning["official_permit"] = permit_reason
+    reasoning["online_renovation"] = online_reason
     lead.raw_data = raw_data
     lead.lead_score = score
     lead.lead_score_reasoning = reasoning
-    lead.lead_scoring_version = "v3"
+    lead.lead_scoring_version = "v4"
     record_audit(session, staff, "lead.building_enrich", "lead", str(lead.id), {"score": score})
     await session.commit()
     return {
         "id": lead.id,
         "lead_score": lead.lead_score,
         "reasoning": lead.lead_score_reasoning,
+        "evidence": evidence,
     }
 
 
@@ -235,6 +360,7 @@ async def list_leads(
             "source": lead.source,
             "lead_score": lead.lead_score,
             "reasoning": lead.lead_score_reasoning,
+            "evidence": renovation_evidence(lead),
             "pipeline_stage": lead.pipeline_stage,
         }
         for lead in leads

@@ -388,6 +388,12 @@ textarea::placeholder { color: #9aa2a9; }
 .lead-reasons > div { display: grid; grid-template-columns: 110px 1fr; gap: 12px; padding: 13px 4px; border-bottom: 1px solid var(--line); }
 .lead-reasons strong { font-size: 11px; }
 .lead-reasons p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.evidence-list { padding: 14px 4px; border-bottom: 1px solid var(--line); }
+.evidence-list h3 { margin: 0 0 9px; font-size: 13px; }
+.evidence-list ul { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.evidence-list li { display: flex; justify-content: space-between; gap: 12px; font-size: 11px; }
+.evidence-list li span { color: var(--muted); }
+.evidence-list a { color: var(--brand); font-weight: 700; }
 .draft-tabs { display: flex; gap: 5px; overflow-x: auto; margin-bottom: 10px; }
 .draft-tabs button { min-height: 35px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 7px; background: #fff; color: var(--muted); font-size: 10px; font-weight: 700; white-space: nowrap; }
 .draft-tabs button.active { border-color: #dc9db3; background: var(--brand-pale); color: var(--brand); }

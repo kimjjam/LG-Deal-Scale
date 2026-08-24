@@ -6,7 +6,13 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.localdata import building_age_score, building_query_from_sbiz, parse_building_title
+from app.localdata import (
+    apply_recent_major_repair,
+    building_age_score,
+    building_query_from_sbiz,
+    parse_building_permits,
+    parse_building_title,
+)
 from app.models import Lead, Staff
 from app.routes.outbound import SbizSyncRequest, enrich_lead_building, sync_sbiz_leads
 
@@ -106,8 +112,46 @@ class BuildingResponse(FakeResponse):
         }
 
 
+class PermitResponse(FakeResponse):
+    def json(self) -> dict[str, object]:
+        return {
+            "response": {
+                "header": {"resultCode": "00", "resultMsg": "NORMAL SERVICE"},
+                "body": {
+                    "items": {
+                        "item": [
+                            {
+                                "archGbCdNm": "대수선",
+                                "bldNm": "가상빌딩",
+                                "useAprDay": "20240110",
+                            }
+                        ]
+                    }
+                },
+            }
+        }
+
+
+class NaverResponse(FakeResponse):
+    def json(self) -> dict[str, object]:
+        return {
+            "items": [
+                {
+                    "title": "가상상가 <b>리뉴얼</b> 안내",
+                    "description": "새단장을 마쳤습니다.",
+                    "link": "https://example.test/renewal",
+                    "postdate": "20240201",
+                }
+            ]
+        }
+
+
 class BuildingClient(FakeClient):
-    async def get(self, _url: str, **_kwargs: object) -> BuildingResponse:
+    async def get(self, url: str, **_kwargs: object) -> FakeResponse:
+        if "ArchPmsHubService" in url:
+            return PermitResponse()
+        if "openapi.naver.com" in url:
+            return NaverResponse()
         return BuildingResponse()
 
 
@@ -134,7 +178,11 @@ async def test_building_enrichment_updates_score_and_reasoning(
     await session.commit()
     monkeypatch.setattr(
         "app.routes.outbound.get_settings",
-        lambda: SimpleNamespace(effective_building_hub_api_key="test-key"),
+        lambda: SimpleNamespace(
+            effective_building_hub_api_key="test-key",
+            naver_client_id="naver-id",
+            naver_client_secret="naver-secret",
+        ),
     )
     monkeypatch.setattr(
         "app.routes.outbound.httpx.AsyncClient", lambda **_kwargs: BuildingClient()
@@ -142,8 +190,10 @@ async def test_building_enrichment_updates_score_and_reasoning(
 
     result = await enrich_lead_building(lead.id, session, manager)
 
-    assert result["lead_score"] in {35, 55, 70, 85}
+    assert result["lead_score"] == 40
     assert "사용승인일 2000-01-15" in result["reasoning"]["building_age"]
+    assert "30점을 낮춘 40점" in result["reasoning"]["official_permit"]
+    assert result["evidence"]["online_mentions"][0]["title"] == "가상상가 리뉴얼 안내"
     assert lead.raw_data["building_register"]["building_name"] == "가상빌딩"
 
 
@@ -152,9 +202,12 @@ def test_building_helpers_use_sbiz_location_and_explain_age() -> None:
         {"ldongCd": "1168010100", "lnoMnno": 825, "lnoSlno": 0}
     )
     building = parse_building_title(BuildingResponse().json())
+    permits = parse_building_permits(PermitResponse().json())
     score, reasoning = building_age_score(date(2000, 1, 15), date(2026, 8, 24))
+    adjusted, permit_reason = apply_recent_major_repair(score, permits, date(2026, 8, 24))
 
     assert query["sigunguCd"] == "11680" and query["bjdongCd"] == "10100"
     assert query["bun"] == "0825" and query["ji"] == "0000"
     assert building["approval_date"] == "2000-01-15"
     assert score == 70 and "26년" in reasoning
+    assert adjusted == 40 and "2024-01-10" in permit_reason

@@ -230,6 +230,13 @@ export interface Lead {
   source: string;
   lead_score: number;
   reasoning: Record<string, string>;
+  evidence?: {
+    permit_status?: string;
+    official_permits?: Array<{ kind?: string | null; date?: string | null; building_name?: string | null }>;
+    naver_status?: string;
+    online_mentions?: Array<{ source: string; title: string; link: string; published_at?: string | null }>;
+    checked_at?: string;
+  };
   pipeline_stage: string;
 }
 

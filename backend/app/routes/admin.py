@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import get_session
-from app.localdata import BUILDING_TITLE_URL
+from app.localdata import BUILDING_PERMIT_URL, BUILDING_TITLE_URL
 from app.security import OwnerStaff
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -61,6 +61,45 @@ async def api_status(session: Session, _owner: OwnerStaff) -> dict[str, object]:
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 response = await client.get(
+                    BUILDING_PERMIT_URL,
+                    params={
+                        "serviceKey": building_key,
+                        "sigunguCd": "11680",
+                        "bjdongCd": "10100",
+                        "platGbCd": "0",
+                        "bun": "0825",
+                        "ji": "0000",
+                        "numOfRows": 1,
+                        "pageNo": 1,
+                        "_type": "json",
+                    },
+                )
+                response.raise_for_status()
+                result_code = str(
+                    response.json().get("response", {}).get("header", {}).get("resultCode") or ""
+                )
+                if result_code != "00":
+                    raise ValueError("건축인허가 인증 실패")
+            services.append(
+                {"name": "건축인허가정보 API", "status": "available", "detail": "연결 정상"}
+            )
+        except (httpx.HTTPError, TypeError, ValueError):
+            services.append(
+                {"name": "건축인허가정보 API", "status": "degraded", "detail": "연결 실패"}
+            )
+    else:
+        services.append(
+            {
+                "name": "건축인허가정보 API",
+                "status": "not_configured",
+                "detail": "DATA_GO_KR_SERVICE_KEY 미설정",
+            }
+        )
+
+    if building_key:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.get(
                     BUILDING_TITLE_URL,
                     params={
                         "serviceKey": building_key,
@@ -105,13 +144,35 @@ async def api_status(session: Session, _owner: OwnerStaff) -> dict[str, object]:
     )
     naver_ready = bool(settings.naver_client_id and settings.naver_client_secret)
     naver_partial = bool(settings.naver_client_id or settings.naver_client_secret)
-    services.append(
-        {
-            "name": "네이버 지역검색 API",
-            "status": "configured" if naver_ready else "incomplete" if naver_partial else "not_configured",
-            "detail": "인증정보 설정됨" if naver_ready else "인증정보 일부 누락" if naver_partial else "인증정보 미설정",
-        }
-    )
+    if naver_ready:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.get(
+                    "https://openapi.naver.com/v1/search/blog.json",
+                    params={"query": "리모델링", "display": 1},
+                    headers={
+                        "X-Naver-Client-Id": settings.naver_client_id,
+                        "X-Naver-Client-Secret": settings.naver_client_secret,
+                    },
+                )
+                response.raise_for_status()
+                if not isinstance(response.json().get("items"), list):
+                    raise TypeError("네이버 검색 응답 오류")
+            services.append(
+                {"name": "네이버 검색 API", "status": "available", "detail": "검색 연결 정상"}
+            )
+        except (httpx.HTTPError, TypeError, ValueError):
+            services.append(
+                {"name": "네이버 검색 API", "status": "degraded", "detail": "검색 연결 실패"}
+            )
+    else:
+        services.append(
+            {
+                "name": "네이버 검색 API",
+                "status": "incomplete" if naver_partial else "not_configured",
+                "detail": "인증정보 일부 누락" if naver_partial else "인증정보 미설정",
+            }
+        )
     email_ready = bool(settings.test_email_address and settings.email_provider_api_key)
     services.append(
         {

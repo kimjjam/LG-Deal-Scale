@@ -45,14 +45,16 @@ from app.security import get_current_staff, require_owner, verify_password
 
 
 class ApiStatusResponse:
-    def __init__(self, building: bool = False) -> None:
-        self.building = building
+    def __init__(self, kind: str = "sbiz") -> None:
+        self.kind = kind
 
     def raise_for_status(self) -> None:
         pass
 
     def json(self) -> dict[str, object]:
-        if self.building:
+        if self.kind == "naver":
+            return {"items": []}
+        if self.kind in {"building", "permit"}:
             return {"response": {"header": {"resultCode": "00"}}}
         return {"header": {"resultCode": "00"}}
 
@@ -65,7 +67,13 @@ class ApiStatusClient:
         pass
 
     async def get(self, url: str, **_kwargs: object) -> ApiStatusResponse:
-        return ApiStatusResponse("BldRgstHubService" in url)
+        if "BldRgstHubService" in url:
+            return ApiStatusResponse("building")
+        if "ArchPmsHubService" in url:
+            return ApiStatusResponse("permit")
+        if "openapi.naver.com" in url:
+            return ApiStatusResponse("naver")
+        return ApiStatusResponse()
 
 
 def test_rep_manual_assignment_returns_403() -> None:
