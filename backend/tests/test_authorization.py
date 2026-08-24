@@ -1,6 +1,7 @@
 import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import jwt
 import pytest
@@ -22,6 +23,8 @@ from app.routes.accounts import (
     update_contact,
 )
 from app.routes.accounts import router as accounts_router
+from app.routes.admin import api_status
+from app.routes.admin import router as admin_router
 from app.routes.inquiries import router
 from app.routes.outbound import router as outbound_router
 from app.routes.staff import (
@@ -39,6 +42,25 @@ from app.schemas import (
     StaffRoleUpdate,
 )
 from app.security import get_current_staff, require_owner, verify_password
+
+
+class ApiStatusResponse:
+    def raise_for_status(self) -> None:
+        pass
+
+    def json(self) -> dict[str, object]:
+        return {"header": {"resultCode": "00"}}
+
+
+class ApiStatusClient:
+    async def __aenter__(self) -> "ApiStatusClient":  # noqa: PYI034
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        pass
+
+    async def get(self, _url: str, **_kwargs: object) -> ApiStatusResponse:
+        return ApiStatusResponse()
 
 
 def test_rep_manual_assignment_returns_403() -> None:
@@ -446,3 +468,63 @@ async def test_contact_soft_delete_is_audited(session: AsyncSession) -> None:
     assert log is not None
     assert log.actor_id == manager.id
     assert log.resource_id == str(contact.id)
+
+
+def test_manager_cannot_view_api_status() -> None:
+    app = FastAPI()
+    app.include_router(admin_router)
+    manager = Staff(
+        id=uuid.uuid4(),
+        name="관리자",
+        email="api-manager@example.test",
+        hashed_password="not-used",
+        role="manager",
+    )
+
+    async def override_staff() -> Staff:
+        return manager
+
+    async def override_session() -> AsyncIterator[None]:
+        yield None
+
+    app.dependency_overrides[get_current_staff] = override_staff
+    app.dependency_overrides[get_session] = override_session
+    with TestClient(app) as client:
+        response = client.get("/api/admin/api-status")
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_owner_api_status_does_not_expose_secrets(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner = Staff(
+        id=uuid.uuid4(),
+        name="총관리자",
+        email="api-owner@example.test",
+        hashed_password="not-used",
+        role="owner",
+    )
+    monkeypatch.setattr(
+        "app.routes.admin.get_settings",
+        lambda: SimpleNamespace(
+            data_go_kr_service_key="public-data-secret",
+            gemini_api_key="gemini-secret",
+            naver_client_id="naver-id",
+            naver_client_secret="naver-secret",
+            outbound_email_mode="dry_run",
+            test_email_address=None,
+            email_provider_api_key=None,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.routes.admin.httpx.AsyncClient", lambda **_kwargs: ApiStatusClient()
+    )
+
+    result = await api_status(session, owner)
+
+    assert all(service["status"] in {"available", "configured"} for service in result["services"])
+    serialized = str(result)
+    assert "public-data-secret" not in serialized
+    assert "gemini-secret" not in serialized
+    assert "naver-secret" not in serialized

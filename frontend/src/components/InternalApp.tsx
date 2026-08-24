@@ -3,6 +3,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { api, loadSession, saveSession } from "../api";
 import type { SearchResult, Session } from "../types";
 import Accounts from "./Accounts";
+import ApiManagement from "./ApiManagement";
 import Dashboard from "./Dashboard";
 import Inbox from "./Inbox";
 import Login from "./Login";
@@ -13,7 +14,7 @@ import StaffManagement from "./StaffManagement";
 import Tasks from "./Tasks";
 import { EmptyState } from "./States";
 
-type View = "inbox" | "accounts" | "pipeline" | "tasks" | "search" | "leads" | "dashboard" | "partners" | "staff";
+type View = "inbox" | "accounts" | "pipeline" | "tasks" | "search" | "leads" | "dashboard" | "partners" | "staff" | "admin";
 
 const NAV_ITEMS: Array<{ key: View; label: string; description: string }> = [
   { key: "inbox", label: "문의 인박스", description: "우선순위 문의" },
@@ -24,7 +25,8 @@ const NAV_ITEMS: Array<{ key: View; label: string; description: string }> = [
   { key: "leads", label: "잠재고객", description: "아웃바운드" },
   { key: "dashboard", label: "성과", description: "파이프라인" },
   { key: "partners", label: "파트너·지역", description: "총판과 지역 담당" },
-  { key: "staff", label: "계정 관리", description: "직원 계정" }
+  { key: "staff", label: "계정 관리", description: "직원 계정" },
+  { key: "admin", label: "API 관리", description: "연동 상태" }
 ];
 
 const SEARCH_EXAMPLES = [
@@ -66,8 +68,8 @@ export default function InternalApp() {
   if (!session) return <Login onLogin={login} />;
   const visibleItems = session.role === "owner"
     ? NAV_ITEMS
-    : NAV_ITEMS.filter((item) => item.key !== "staff");
-  const currentView = view === "staff" && session.role !== "owner" ? "inbox" : view;
+    : NAV_ITEMS.filter((item) => item.key !== "staff" && item.key !== "admin");
+  const currentView = (view === "staff" || view === "admin") && session.role !== "owner" ? "inbox" : view;
   const activeItem = visibleItems.find((item) => item.key === currentView) ?? visibleItems[0];
 
   return (
@@ -122,6 +124,7 @@ export default function InternalApp() {
         {currentView === "dashboard" ? <Dashboard session={session} /> : null}
         {currentView === "partners" ? <PartnersRegions session={session} /> : null}
         {currentView === "staff" && session.role === "owner" ? <StaffManagement session={session} /> : null}
+        {currentView === "admin" && session.role === "owner" ? <ApiManagement session={session} /> : null}
       </div>
     </div>
   );
@@ -137,7 +140,8 @@ function NavIcon({ name }: { name: View }) {
     leads: "M12 3l2.2 4.7L19 10l-4.8 2.3L12 17l-2.2-4.7L5 10l4.8-2.3z M5 17l-2 4 M19 17l2 4",
     dashboard: "M4 20V11h3v9z M10.5 20V4h3v16z M17 20v-6h3v6z",
     partners: "M4 20V8h7v12 M13 20V4h7v16 M7 11h1 M7 15h1 M16 8h1 M16 12h1 M16 16h1",
-    staff: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z M4 21a8 8 0 0 1 16 0 M19 8v6 M16 11h6"
+    staff: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z M4 21a8 8 0 0 1 16 0 M19 8v6 M16 11h6",
+    admin: "M5 4h14v16H5z M8 8h8 M8 12h8 M8 16h5"
   };
   return (
     <svg className="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
