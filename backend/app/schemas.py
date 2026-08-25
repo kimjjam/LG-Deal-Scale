@@ -35,6 +35,7 @@ REGION_ALIASES = {
     "경남": ("경상남도", "경남"),
     "제주": ("제주특별자치도", "제주도", "제주"),
 }
+STAFF_REGION_KEYWORDS = {aliases[0]: keyword for keyword, aliases in REGION_ALIASES.items()}
 try:
     SEOUL_TIMEZONE = ZoneInfo("Asia/Seoul")
 except ZoneInfoNotFoundError:
@@ -463,6 +464,20 @@ class StaffCreate(BaseModel):
     email: EmailStr
     role: Literal["manager", "rep"]
     password: str = Field(min_length=12, max_length=128)
+    region_name: str | None = Field(default=None, min_length=1, max_length=20)
+
+    @field_validator("region_name", mode="before")
+    @classmethod
+    def strip_region_name(cls, value: object) -> object:
+        return None if value is None else strip_nonblank(value)
+
+    @model_validator(mode="after")
+    def validate_region_assignment(self) -> "StaffCreate":
+        if self.role == "manager" and self.region_name not in STAFF_REGION_KEYWORDS:
+            raise ValueError("관리자는 17개 시·도 중 담당 지역을 선택해야 합니다.")
+        if self.role == "rep" and self.region_name is not None:
+            raise ValueError("영업 담당자 계정에는 지역을 지정할 수 없습니다.")
+        return self
 
 
 class StaffRoleUpdate(BaseModel):

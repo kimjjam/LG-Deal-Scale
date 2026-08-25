@@ -11,6 +11,7 @@ from app.audit import record_audit
 from app.database import get_session
 from app.models import Assignment, Inquiry, Lead, SalesRegion, Staff
 from app.schemas import (
+    STAFF_REGION_KEYWORDS,
     RegionalStaffPasswordResetResult,
     StaffActiveUpdate,
     StaffCreate,
@@ -55,6 +56,22 @@ async def create_staff(payload: StaffCreate, session: Session, owner: OwnerStaff
             staff.id,
             {"email": staff.email, "role": staff.role},
         )
+        if payload.region_name:
+            region = SalesRegion(
+                region_name=payload.region_name,
+                match_keyword=STAFF_REGION_KEYWORDS[payload.region_name],
+                manager_id=staff.id,
+            )
+            session.add(region)
+            await session.flush()
+            record_audit(
+                session,
+                owner,
+                "sales_region.create",
+                "sales_region",
+                region.id,
+                {"region_name": region.region_name},
+            )
         await session.commit()
     except IntegrityError:
         await session.rollback()

@@ -7,6 +7,7 @@ import jwt
 import pytest
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -268,19 +269,19 @@ async def test_owner_manages_staff_accounts(session: AsyncSession) -> None:
     await session.commit()
     created = await create_staff(
         StaffCreate(
-            name="관리자",
+            name="영업 담당자",
             email="manager-new@example.com",
-            role="manager",
+            role="rep",
             password="initial-pass-1234",
         ),
         session,
         owner,
     )
-    assert created.role == "manager"
+    assert created.role == "rep"
     assert verify_password("initial-pass-1234", created.hashed_password)
 
-    updated = await update_staff_role(created.id, StaffRoleUpdate(role="rep"), session, owner)
-    assert updated.role == "rep"
+    updated = await update_staff_role(created.id, StaffRoleUpdate(role="manager"), session, owner)
+    assert updated.role == "manager"
 
     deactivated = await update_staff_active(
         created.id, StaffActiveUpdate(is_active=False), session, owner
@@ -302,6 +303,60 @@ async def test_owner_manages_staff_accounts(session: AsyncSession) -> None:
         "staff.password_reset",
     ]
     assert "password" not in str([log.details for log in logs]).lower()
+
+
+@pytest.mark.asyncio
+async def test_owner_creates_manager_with_region_atomically(session: AsyncSession) -> None:
+    owner = Staff(
+        id=uuid.uuid4(),
+        name="총관리자",
+        email="regional-create-owner@example.test",
+        hashed_password="not-used",
+        role="owner",
+    )
+    session.add(owner)
+    await session.commit()
+
+    with pytest.raises(ValidationError):
+        StaffCreate(
+            name="지역 없는 관리자",
+            email="missing-region@example.com",
+            role="manager",
+            password="initial-pass-1234",
+        )
+
+    created = await create_staff(
+        StaffCreate(
+            name="서울 지역담당",
+            email="regional-create@example.com",
+            role="manager",
+            password="initial-pass-1234",
+            region_name="서울특별시",
+        ),
+        session,
+        owner,
+    )
+    region = await session.scalar(select(SalesRegion).where(SalesRegion.manager_id == created.id))
+    assert region is not None
+    assert (region.region_name, region.match_keyword) == ("서울특별시", "서울")
+    logs = list((await session.scalars(select(AuditLog).order_by(AuditLog.id))).all())
+    assert [log.action for log in logs] == ["staff.create", "sales_region.create"]
+
+    with pytest.raises(HTTPException) as error:
+        await create_staff(
+            StaffCreate(
+                name="중복 관리자",
+                email="regional-create@example.com",
+                role="manager",
+                password="another-pass-1234",
+                region_name="부산광역시",
+            ),
+            session,
+            owner,
+        )
+    assert error.value.status_code == 409
+    regions = list((await session.scalars(select(SalesRegion))).all())
+    assert [(item.region_name, item.match_keyword) for item in regions] == [("서울특별시", "서울")]
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,11 @@ type EditableRole = Exclude<Role, "owner">;
 type RegionalTemporaryPassword = Pick<StaffMember, "id" | "name" | "email"> & {
   temporary_password: string;
 };
+const STAFF_REGIONS = [
+  "서울특별시", "부산광역시", "대구광역시", "인천광역시", "광주광역시", "대전광역시",
+  "울산광역시", "세종특별자치시", "경기도", "강원특별자치도", "충청북도", "충청남도",
+  "전북특별자치도", "전라남도", "경상북도", "경상남도", "제주특별자치도"
+] as const;
 
 export default function StaffManagement({ session }: { session: Session }) {
   const [staff, setStaff] = useState<StaffMember[]>([]);
@@ -18,6 +23,7 @@ export default function StaffManagement({ session }: { session: Session }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<EditableRole>("manager");
+  const [regionName, setRegionName] = useState("");
   const [password, setPassword] = useState("");
   const [resetTarget, setResetTarget] = useState<StaffMember | null>(null);
   const [resetPassword, setResetPassword] = useState("");
@@ -46,11 +52,12 @@ export default function StaffManagement({ session }: { session: Session }) {
     try {
       await api("/staff", {
         method: "POST",
-        body: JSON.stringify({ name, email, role, password })
+        body: JSON.stringify({ name, email, role, password, region_name: role === "manager" ? regionName : null })
       }, session);
       await loadStaff();
       setName("");
       setEmail("");
+      setRegionName("");
       setPassword("");
       setSuccess("직원 계정을 생성했습니다.");
     } catch (requestError) {
@@ -150,6 +157,7 @@ export default function StaffManagement({ session }: { session: Session }) {
         <div className="field-group"><label htmlFor="staff-name">이름</label><input id="staff-name" value={name} onChange={(event) => setName(event.target.value)} maxLength={100} required /></div>
         <div className="field-group"><label htmlFor="staff-email">이메일</label><input id="staff-email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></div>
         <div className="field-group"><label htmlFor="staff-role">역할</label><select id="staff-role" value={role} onChange={(event) => setRole(event.target.value as EditableRole)}><option value="manager">관리자</option><option value="rep">영업 담당자</option></select></div>
+        {role === "manager" ? <div className="field-group"><label htmlFor="staff-region">담당 지역</label><select id="staff-region" value={regionName} onChange={(event) => setRegionName(event.target.value)} required><option value="">선택</option>{STAFF_REGIONS.map((region) => <option key={region} value={region}>{region}</option>)}</select></div> : null}
         <div className="field-group"><label htmlFor="staff-password">초기 비밀번호</label><input id="staff-password" type="password" autoComplete="new-password" minLength={12} maxLength={128} value={password} onChange={(event) => setPassword(event.target.value)} required /></div>
         <button className="primary" disabled={busy}>계정 생성</button>
       </form>

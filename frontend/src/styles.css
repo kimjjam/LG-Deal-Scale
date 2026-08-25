@@ -255,7 +255,7 @@ textarea::placeholder { color: #9aa2a9; }
 .data-grid .empty-state { min-height: 260px; border: 0; background: transparent; }
 
 /* Staff management */
-.staff-create-form { display: grid; grid-template-columns: 1fr 1.4fr 150px 1fr auto; align-items: end; gap: 12px; margin-bottom: 18px; padding: 18px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fff; }
+.staff-create-form { display: grid; grid-template-columns: 1fr 1.4fr 130px 165px 1fr auto; align-items: end; gap: 12px; margin-bottom: 18px; padding: 18px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fff; }
 .staff-create-form input,
 .staff-create-form select { width: 100%; min-height: 42px; padding: 8px 10px; }
 .staff-grid { min-width: 760px; }
