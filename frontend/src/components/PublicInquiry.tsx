@@ -14,6 +14,12 @@ const PURCHASE_STAGE_OPTIONS: Array<NonNullable<IntakeFields["purchase_stage"]>>
   "모델 비교",
   "정보 수집"
 ];
+const PURCHASE_TIMING_OPTIONS: Array<NonNullable<IntakeFields["purchase_timing"]>> = [
+  "즉시",
+  "1개월 이내",
+  "3개월 이내",
+  "미정"
+];
 
 const FIELD_LABELS: Array<{ key: keyof IntakeFields; label: string; suffix?: string }> = [
   { key: "business_name", label: "업체명" },
@@ -130,10 +136,14 @@ export default function PublicInquiry() {
     return value === null || value === undefined || value === "" ? [] : [{ key, label, value: `${String(value)}${suffix ?? ""}` }];
   });
   const latestMessage = messages[messages.length - 1];
-  const showPurchaseStageOptions = !busy
-    && !fields.purchase_stage
-    && latestMessage?.role === "assistant"
-    && PURCHASE_STAGE_OPTIONS.every((option) => latestMessage.content.includes(option));
+  let quickChoice: { title: string; options: string[] } | null = null;
+  if (!busy && latestMessage?.role === "assistant") {
+    if (!fields.purchase_stage && PURCHASE_STAGE_OPTIONS.every((option) => latestMessage.content.includes(option))) {
+      quickChoice = { title: "현재 구매 단계를 선택해주세요", options: PURCHASE_STAGE_OPTIONS };
+    } else if (!fields.purchase_timing && PURCHASE_TIMING_OPTIONS.every((option) => latestMessage.content.includes(option))) {
+      quickChoice = { title: "예상 구매 시기를 선택해주세요", options: PURCHASE_TIMING_OPTIONS };
+    }
+  }
 
   if (!started) return (
     <main className="public-page">
@@ -206,11 +216,11 @@ export default function PublicInquiry() {
               <p className={`bubble ${message.role}`}>{message.content}</p>
             </article>
           ))}
-          {showPurchaseStageOptions ? (
-            <section className="purchase-stage-choices" aria-labelledby="purchase-stage-title">
-              <strong id="purchase-stage-title">현재 구매 단계를 선택해주세요</strong>
+          {quickChoice ? (
+            <section className="consultation-choices" aria-labelledby="consultation-choice-title">
+              <strong id="consultation-choice-title">{quickChoice.title}</strong>
               <div>
-                {PURCHASE_STAGE_OPTIONS.map((option) => (
+                {quickChoice.options.map((option) => (
                   <button type="button" key={option} onClick={() => void sendContent(option)}>{option}</button>
                 ))}
               </div>

@@ -491,11 +491,11 @@ textarea::placeholder { color: #9aa2a9; }
 .bubble { max-width: none; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: #343a3f; font-size: 12px; line-height: 1.7; white-space: pre-wrap; box-shadow: none; }
 .bubble.user { color: var(--ink); }
 .bubble.typing { color: var(--muted); }
-.purchase-stage-choices { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
-.purchase-stage-choices > strong { display: block; margin-bottom: 9px; font-size: 11px; }
-.purchase-stage-choices > div { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-.purchase-stage-choices button { min-height: 42px; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: #fff; color: var(--ink); font-size: 10px; font-weight: 750; }
-.purchase-stage-choices button:hover:not(:disabled) { border-color: var(--brand); background: var(--brand-pale); color: var(--brand); }
+.consultation-choices { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+.consultation-choices > strong { display: block; margin-bottom: 9px; font-size: 11px; }
+.consultation-choices > div { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
+.consultation-choices button { min-height: 42px; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: #fff; color: var(--ink); font-size: 10px; font-weight: 750; }
+.consultation-choices button:hover:not(:disabled) { border-color: var(--brand); background: var(--brand-pale); color: var(--brand); }
 .returning { margin: 14px 0 0; padding: 9px 11px; border-radius: var(--radius-sm); background: var(--success-soft); color: #34624f; font-size: 9px; }
 .chat-notice { grid-column: 1; grid-row: 4; margin: 8px 16px; }
 .intake-review { min-height: 0; grid-column: 2; grid-row: 3 / 6; overflow-y: auto; padding: 22px 20px; border-left: 1px solid var(--line); background: #f7f8f9; }
@@ -676,7 +676,7 @@ textarea::placeholder { color: #9aa2a9; }
   .message-row.user { margin: 0; padding: 13px 11px; }
   .speaker-label { padding: 0; font-size: 9px; }
   .bubble { max-width: none; font-size: 11px; }
-  .purchase-stage-choices > div { grid-template-columns: 1fr; }
+  .consultation-choices > div { grid-template-columns: 1fr; }
   .intake-review { padding: 20px 16px; }
   .chat-input { padding: 11px; }
   .consultation-input-copy { display: grid; gap: 2px; }
