@@ -477,6 +477,13 @@ class StaffPasswordReset(BaseModel):
     password: str = Field(min_length=12, max_length=128)
 
 
+class RegionalStaffPasswordResetResult(BaseModel):
+    id: uuid.UUID
+    name: str
+    email: EmailStr
+    temporary_password: str = Field(min_length=12)
+
+
 class OpportunityCreate(BaseModel):
     account_id: int
     assignee_id: uuid.UUID

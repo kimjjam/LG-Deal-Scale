@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import jwt
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +29,7 @@ from app.routes.inquiries import router
 from app.routes.search import router as search_router
 from app.routes.staff import (
     create_staff,
+    reset_regional_manager_passwords,
     reset_staff_password,
     update_staff_active,
     update_staff_role,
@@ -41,7 +42,7 @@ from app.schemas import (
     StaffPasswordReset,
     StaffRoleUpdate,
 )
-from app.security import get_current_staff, require_owner, verify_password
+from app.security import get_current_staff, hash_password, require_owner, verify_password
 
 
 class ApiStatusResponse:
@@ -230,6 +231,30 @@ def test_manager_cannot_change_own_role() -> None:
     assert response.status_code == 403
 
 
+def test_manager_cannot_bulk_reset_regional_passwords() -> None:
+    app = FastAPI()
+    app.include_router(staff_router)
+    manager = Staff(
+        id=uuid.uuid4(),
+        name="관리자",
+        email="bulk-reset-manager@example.test",
+        hashed_password="not-used",
+        role="manager",
+    )
+
+    async def override_staff() -> Staff:
+        return manager
+
+    async def override_session() -> AsyncIterator[None]:
+        yield None
+
+    app.dependency_overrides[get_current_staff] = override_staff
+    app.dependency_overrides[get_session] = override_session
+    with TestClient(app) as client:
+        response = client.post("/api/staff/regional-managers/reset-passwords")
+    assert response.status_code == 403
+
+
 @pytest.mark.asyncio
 async def test_owner_manages_staff_accounts(session: AsyncSession) -> None:
     owner = Staff(
@@ -277,6 +302,92 @@ async def test_owner_manages_staff_accounts(session: AsyncSession) -> None:
         "staff.password_reset",
     ]
     assert "password" not in str([log.details for log in logs]).lower()
+
+
+@pytest.mark.asyncio
+async def test_owner_bulk_resets_only_active_regional_managers(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner = Staff(
+        id=uuid.uuid4(),
+        name="총관리자",
+        email="bulk-owner@example.test",
+        hashed_password="not-used",
+        role="owner",
+    )
+    first = Staff(
+        id=uuid.uuid4(),
+        name="서울 지역담당",
+        email="seoul-region@example.com",
+        hashed_password="old-first",
+        role="manager",
+    )
+    second = Staff(
+        id=uuid.uuid4(),
+        name="부산 지역담당",
+        email="busan-region@example.com",
+        hashed_password="old-second",
+        role="manager",
+    )
+    unrelated = Staff(
+        id=uuid.uuid4(),
+        name="일반 관리자",
+        email="unrelated-manager@example.com",
+        hashed_password=hash_password("unchanged-pass-1234"),
+        role="manager",
+    )
+    session.add_all([owner, first, second, unrelated])
+    await session.flush()
+    session.add_all(
+        [
+            SalesRegion(
+                region_name="서울특별시",
+                match_keyword="서울",
+                manager_id=first.id,
+            ),
+            SalesRegion(
+                region_name="부산광역시",
+                match_keyword="부산",
+                manager_id=second.id,
+            ),
+            SalesRegion(
+                region_name="제주특별자치도",
+                match_keyword="제주",
+                manager_id=unrelated.id,
+                is_active=False,
+            ),
+        ]
+    )
+    await session.commit()
+    generated = iter(["temporary-pass-0001", "temporary-pass-0002"])
+    monkeypatch.setattr(
+        "app.routes.staff.secrets.token_urlsafe",
+        lambda _bytes: next(generated),
+    )
+
+    response = Response()
+    results = await reset_regional_manager_passwords(response, session, owner)
+
+    passwords = {result.email: result.temporary_password for result in results}
+    assert passwords == {
+        "busan-region@example.com": "temporary-pass-0001",
+        "seoul-region@example.com": "temporary-pass-0002",
+    }
+    assert verify_password(passwords[first.email], first.hashed_password)
+    assert verify_password(passwords[second.email], second.hashed_password)
+    assert verify_password("unchanged-pass-1234", unrelated.hashed_password)
+    assert response.headers["Cache-Control"] == "no-store"
+    logs = list(
+        (
+            await session.scalars(
+                select(AuditLog).where(AuditLog.action == "staff.password_reset")
+            )
+        ).all()
+    )
+    assert len(logs) == 2
+    assert all(log.details == {"method": "regional_bulk"} for log in logs)
+    assert "temporary-pass" not in str([log.details for log in logs])
 
 
 @pytest.mark.asyncio

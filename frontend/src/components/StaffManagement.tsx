@@ -5,6 +5,9 @@ import type { Role, Session, StaffMember } from "../types";
 import { EmptyState, LoadingState } from "./States";
 
 type EditableRole = Exclude<Role, "owner">;
+type RegionalTemporaryPassword = Pick<StaffMember, "id" | "name" | "email"> & {
+  temporary_password: string;
+};
 
 export default function StaffManagement({ session }: { session: Session }) {
   const [staff, setStaff] = useState<StaffMember[]>([]);
@@ -18,6 +21,7 @@ export default function StaffManagement({ session }: { session: Session }) {
   const [password, setPassword] = useState("");
   const [resetTarget, setResetTarget] = useState<StaffMember | null>(null);
   const [resetPassword, setResetPassword] = useState("");
+  const [regionalPasswords, setRegionalPasswords] = useState<RegionalTemporaryPassword[]>([]);
 
   async function loadStaff() {
     setStaff(await api<StaffMember[]>("/staff", {}, session));
@@ -101,6 +105,7 @@ export default function StaffManagement({ session }: { session: Session }) {
         body: JSON.stringify({ password: resetPassword })
       }, session);
       setSuccess(`${resetTarget.name}님의 비밀번호를 재설정했습니다.`);
+      setRegionalPasswords([]);
       setResetTarget(null);
       setResetPassword("");
     } catch (requestError) {
@@ -110,11 +115,35 @@ export default function StaffManagement({ session }: { session: Session }) {
     }
   }
 
+  async function resetRegionalPasswords() {
+    if (!window.confirm("활성 지역 담당자의 기존 비밀번호를 모두 변경하시겠습니까?")) return;
+    setBusy(true);
+    setError("");
+    setSuccess("");
+    setRegionalPasswords([]);
+    setResetTarget(null);
+    setResetPassword("");
+    try {
+      const rows = await api<RegionalTemporaryPassword[]>("/staff/regional-managers/reset-passwords", {
+        method: "POST"
+      }, session);
+      setRegionalPasswords(rows);
+      setSuccess(rows.length ? `${rows.length}명의 임시 비밀번호를 발급했습니다.` : "재설정할 활성 지역 담당 계정이 없습니다.");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "지역 담당 비밀번호를 재설정하지 못했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="workspace" aria-labelledby="staff-title" aria-busy={loading || busy}>
       <div className="commandbar">
         <div><h1 id="staff-title">계정 관리</h1><p>직원 계정을 만들고 역할과 비밀번호를 관리합니다.</p></div>
-        <span className="count-chip">{staff.length.toLocaleString("ko-KR")}개 계정</span>
+        <div className="command-actions">
+          <button className="secondary-button" type="button" disabled={busy} onClick={() => void resetRegionalPasswords()}>지역 담당 일괄 재설정</button>
+          <span className="count-chip">{staff.length.toLocaleString("ko-KR")}개 계정</span>
+        </div>
       </div>
 
       <form className="staff-create-form" onSubmit={createAccount}>
@@ -127,6 +156,21 @@ export default function StaffManagement({ session }: { session: Session }) {
 
       {error ? <p className="error notice" role="alert">{error}</p> : null}
       {success ? <p className="success notice" role="status">{success}</p> : null}
+
+      {regionalPasswords.length ? (
+        <section aria-labelledby="regional-passwords-title">
+          <div className="section-heading">
+            <div><h2 id="regional-passwords-title">지역 담당 임시 비밀번호</h2><p>이 목록은 새로고침하거나 화면을 벗어나면 다시 확인할 수 없습니다.</p></div>
+            <button className="secondary-button" type="button" onClick={() => setRegionalPasswords([])}>목록 숨기기</button>
+          </div>
+          <div className="data-grid-wrap" role="region" aria-label="지역 담당 임시 비밀번호 표, 가로 스크롤 가능" tabIndex={0}>
+            <table className="data-grid">
+              <thead><tr><th scope="col">이름</th><th scope="col">이메일</th><th scope="col">임시 비밀번호</th></tr></thead>
+              <tbody>{regionalPasswords.map((member) => <tr key={member.id}><td>{member.name}</td><td>{member.email}</td><td><code>{member.temporary_password}</code></td></tr>)}</tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
 
       {resetTarget ? (
         <form className="password-reset-form" onSubmit={resetAccountPassword}>

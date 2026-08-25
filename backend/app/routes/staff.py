@@ -1,7 +1,8 @@
+import secrets
 import uuid
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +11,7 @@ from app.audit import record_audit
 from app.database import get_session
 from app.models import Assignment, Inquiry, Lead, SalesRegion, Staff
 from app.schemas import (
+    RegionalStaffPasswordResetResult,
     StaffActiveUpdate,
     StaffCreate,
     StaffIdentity,
@@ -190,6 +192,55 @@ async def update_staff_active(
     await session.commit()
     await session.refresh(staff)
     return staff
+
+
+@router.post(
+    "/regional-managers/reset-passwords",
+    response_model=list[RegionalStaffPasswordResetResult],
+)
+async def reset_regional_manager_passwords(
+    response: Response,
+    session: Session,
+    owner: OwnerStaff,
+) -> list[RegionalStaffPasswordResetResult]:
+    managers = list(
+        (
+            await session.scalars(
+                select(Staff)
+                .join(SalesRegion, SalesRegion.manager_id == Staff.id)
+                .where(
+                    SalesRegion.is_active.is_(True),
+                    Staff.is_active.is_(True),
+                    Staff.role == "manager",
+                )
+                .distinct()
+                .order_by(Staff.name, Staff.id)
+            )
+        ).all()
+    )
+    results: list[RegionalStaffPasswordResetResult] = []
+    for staff in managers:
+        temporary_password = secrets.token_urlsafe(12)
+        staff.hashed_password = hash_password(temporary_password)
+        record_audit(
+            session,
+            owner,
+            "staff.password_reset",
+            "staff",
+            staff.id,
+            {"method": "regional_bulk"},
+        )
+        results.append(
+            RegionalStaffPasswordResetResult(
+                id=staff.id,
+                name=staff.name,
+                email=staff.email,
+                temporary_password=temporary_password,
+            )
+        )
+    await session.commit()
+    response.headers["Cache-Control"] = "no-store"
+    return results
 
 
 @router.post("/{staff_id}/reset-password", status_code=status.HTTP_204_NO_CONTENT)
