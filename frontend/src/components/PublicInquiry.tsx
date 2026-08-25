@@ -6,7 +6,7 @@ import type { ChatMessage, ChatTurn, IntakeFields, PublicResult } from "../types
 const INITIAL_MESSAGES: ChatMessage[] = [
   {
     role: "assistant",
-    content: "안녕하세요. LG Deal Scale 제품 비교 안내입니다. 업체 상황과 필요한 가전제품을 말씀해주세요."
+    content: "안녕하세요. LG Deal Scale 제품 도입 상담팀입니다. 사업장 상황과 필요한 제품을 편하게 말씀해주세요."
   }
 ];
 
@@ -128,19 +128,19 @@ export default function PublicInquiry() {
         <header className="chat-header">
           <div className="public-brand">
             <span className="brand-symbol public" aria-hidden="true">LG</span>
-            <div><h1>LG Deal Scale | LG전자 등 제품 정보 비교</h1><small>제품 비교 안내 서비스</small></div>
+            <div><h1>LG Deal Scale 제품 도입 상담</h1><small>사업장 맞춤 제품 정보 안내</small></div>
           </div>
         </header>
         <div className="public-intro">
           <div>
-            <h2 id="public-intro-title">사업장용 가전제품 정보와 공식몰 참고 가격을 한눈에 확인하세요</h2>
-            <p>업종·규모·필요 수량을 입력하면 등록된 제품 정보, 공식몰 참고 가격, 공식 링크와 상담 경로를 안내합니다.</p>
-            <p className="service-disclaimer">LG Deal Scale 제품 비교 안내 서비스입니다.</p>
+            <h2 id="public-intro-title">사업장 환경에 맞는 제품 도입 상담을 시작하세요</h2>
+            <p>상담 내용을 남겨주시면 필요한 제품과 수량을 정리하고, 등록된 제품 정보와 공식 구매·상담 경로를 안내합니다.</p>
+            <p className="service-disclaimer">입력한 내용을 자동으로 정리한 뒤 담당팀이 확인할 수 있도록 접수합니다.</p>
           </div>
           <ol>
-            <li><strong>상황 확인</strong><span>업종, 규모, 제품, 수량과 구매 시기를 물어봅니다.</span></li>
-            <li><strong>내용 확인</strong><span>정리된 내용을 직접 확인하고 수정할 수 있습니다.</span></li>
-            <li><strong>제품 안내</strong><span>확정 버튼을 누르면 상담이 접수되고 등록된 제품 정보가 표시됩니다.</span></li>
+            <li><strong>상담 내용 접수</strong><span>사업장과 필요한 제품 정보를 편하게 말씀해주세요.</span></li>
+            <li><strong>요청사항 확인</strong><span>정리된 상담 내용을 직접 확인하고 수정할 수 있습니다.</span></li>
+            <li><strong>제품·상담 안내</strong><span>접수 후 등록 제품 정보와 연결 가능한 상담 경로를 안내합니다.</span></li>
           </ol>
           <section className="public-intro-notice" aria-labelledby="public-notice-title">
             <h3 id="public-notice-title">안내사항</h3>
@@ -150,7 +150,7 @@ export default function PublicInquiry() {
               <div><dt>개인정보</dt><dd>입력 정보는 상담 접수, 제품 안내와 영업 우선순위 산정에 사용됩니다.</dd></div>
             </dl>
           </section>
-          <button ref={startButtonRef} className="primary public-start-button" type="button" onClick={() => setStarted(true)}>제품 비교 시작하기</button>
+          <button ref={startButtonRef} className="primary public-start-button" type="button" onClick={() => setStarted(true)}>제품 도입 상담 시작하기</button>
         </div>
         <footer className="chat-footer"><span aria-hidden="true">●</span> LG Deal Scale · 입력 정보는 상담과 제품 안내에 사용됩니다.</footer>
       </section>
@@ -159,19 +159,19 @@ export default function PublicInquiry() {
 
   return (
     <main className="public-page">
-      <section className="chat-shell" aria-labelledby="public-title">
+      <section className="chat-shell consultation-shell" aria-labelledby="public-title">
         <header className="chat-header">
           <div className="public-brand">
             <span className="brand-symbol public" aria-hidden="true">LG</span>
-            <div><h1 id="public-title">LG Deal Scale | LG전자 등 제품 정보 비교</h1><small>제품 비교 안내 서비스</small></div>
+            <div><h1 id="public-title">LG Deal Scale 제품 도입 상담</h1><small>사업장 맞춤 제품 정보 안내</small></div>
           </div>
-          <span className="chat-status"><span aria-hidden="true" />상담 가능</span>
+          <span className="consultation-status"><span aria-hidden="true" />온라인 상담 접수 중</span>
         </header>
 
-        <div className="chat-subheader">
-          <span className={ready || result ? "complete" : ""}><strong>1</strong> 상황 확인</span><i aria-hidden="true" />
-          <span className={ready || result ? "complete" : ""}><strong>2</strong> 정보 정리</span><i aria-hidden="true" />
-          <span className={result ? "complete" : ""}><strong>3</strong> 제품 안내</span>
+        <div className="consultation-progress" aria-label="상담 진행 단계">
+          <span className={ready || result ? "complete" : "current"} aria-current={!ready && !result ? "step" : undefined}><small>01</small>상담 내용 접수</span>
+          <span className={result ? "complete" : ready ? "current" : ""} aria-current={ready && !result ? "step" : undefined}><small>02</small>요청사항 확인</span>
+          <span className={result ? "current" : ""} aria-current={result ? "step" : undefined}><small>03</small>제품·상담 안내</span>
         </div>
 
         <div
@@ -182,51 +182,61 @@ export default function PublicInquiry() {
           aria-relevant="additions"
           aria-busy={busy}
         >
-          <div className="welcome-card">
-            <span aria-hidden="true">AI</span>
-            <div><strong>제품 비교 정보를 준비하겠습니다</strong><p>업체 상황, 필요한 제품과 수량을 알려주시면 제품 정보·공식몰 참고 가격·공식 링크와 상담 경로를 정리합니다.</p></div>
+          <div className="consultation-log-heading">
+            <div><strong>상담 기록</strong><p>입력하신 내용을 순서대로 확인하고 오른쪽 상담 요약에 정리합니다.</p></div>
+            <span>자동 정리</span>
           </div>
-          {returningCustomer ? <p className="returning">이전에 상담하신 연락처로 확인됐어요.</p> : null}
+          {returningCustomer ? <p className="returning">등록된 상담 연락처로 확인되었습니다.</p> : null}
           {messages.map((message, index) => (
-            <div className={`message-row ${message.role}`} key={`${message.role}-${index}`}>
-              {message.role === "assistant" ? <span className="message-avatar" aria-hidden="true">LG</span> : null}
+            <article className={`message-row ${message.role}`} key={`${message.role}-${index}`}>
+              <span className="speaker-label">{message.role === "assistant" ? "상담 데스크" : "고객"}</span>
               <p className={`bubble ${message.role}`}>{message.content}</p>
-            </div>
+            </article>
           ))}
           {ready && !result ? (
-            <div className="message-row assistant">
-              <span className="message-avatar" aria-hidden="true">LG</span>
-              <p className="bubble assistant submission-guidance">수정하거나 추가할 내용이 있다면 지금 말씀해주세요. 아래 버튼을 누르면 상담 요청이 접수되고 담당자에게 전달됩니다.</p>
-            </div>
+            <article className="message-row assistant">
+              <span className="speaker-label">상담 데스크</span>
+              <p className="bubble assistant submission-guidance">요청사항 정리가 완료되었습니다. 오른쪽 내용을 확인한 뒤 상담을 접수해주세요.</p>
+            </article>
           ) : null}
           {busy ? (
-            <div className="message-row assistant" role="status">
-              <span className="message-avatar" aria-hidden="true">LG</span>
-              <p className="bubble assistant typing"><span aria-hidden="true" /><span aria-hidden="true" /><span aria-hidden="true" /><span className="sr-only">내용을 확인하고 있어요.</span></p>
-            </div>
+            <article className="message-row assistant" role="status">
+              <span className="speaker-label">상담 데스크</span>
+              <p className="bubble assistant typing">입력 내용을 확인하고 있습니다.</p>
+            </article>
           ) : null}
         </div>
 
         {error ? <p className="error notice chat-notice" role="alert">{error}</p> : null}
-        {ready && !result ? (
-          <section className="intake-review" aria-labelledby="review-title">
-            <div className="section-heading compact">
-              <div><h2 id="review-title">이렇게 이해했어요</h2></div>
-              <span className="status-badge routed">정보 확인</span>
+        {!result ? (
+          <aside className={`intake-review${ready ? " ready" : ""}`} aria-labelledby="review-title">
+            <div className="consultation-summary-heading">
+              <h2 id="review-title">현재까지 확인된 내용</h2>
+              <span>입력 내용을 상담 항목별로 정리합니다.</span>
             </div>
-            <dl>
-              {summary.map((item) => <div key={item.key}><dt>{item.label}</dt><dd>{item.value}</dd></div>)}
-            </dl>
-            <p className="review-help">내용을 바꾸려면 아래 대화창에 수정할 정보를 말씀해주세요.</p>
-            <p className="submit-note"><strong>접수 전 확인</strong> 아래 버튼을 누르는 즉시 상담 요청이 접수되고 담당자에게 전달됩니다.</p>
-            <label className="confirm-check intake-confirm">
-              <input type="checkbox" checked={confirmed} disabled={busy} onChange={(event) => setConfirmed(event.target.checked)} />
-              <span><strong>[필수] 개인정보 수집·이용 동의</strong><br />수집 항목: 업체명, 연락처, 업종·규모, 관심 제품·수량, 지역, 상담 내용. 이용 목적: 제품 정보·공식몰 참고 가격 안내, 상담 접수·담당자 연결, 영업 우선순위 산정. 보유 기간: 계정 및 상담 기록 삭제 시까지. 동의를 거부할 수 있으나, 거부 시 상담 접수와 제품 안내를 이용할 수 없습니다.</span>
-            </label>
-            <button className="primary analysis-button" type="button" onClick={submitInquiry} disabled={busy || !confirmed}>
-              {busy ? <><span className="spinner" aria-hidden="true" />접수 중…</> : "문의 접수하고 제품 정보 보기"}
-            </button>
-          </section>
+            {summary.length ? (
+              <dl>{summary.map((item) => <div key={item.key}><dt>{item.label}</dt><dd>{item.value}</dd></div>)}</dl>
+            ) : <p className="summary-empty">상담 내용을 입력하면 확인된 정보가 여기에 정리됩니다.</p>}
+            {ready ? (
+              <>
+                <p className="review-help">수정할 내용은 왼쪽 입력란에 다시 말씀해주세요.</p>
+                <p className="submit-note"><strong>접수 전 확인</strong> 버튼을 누르면 상담 요청이 담당팀에 전달됩니다.</p>
+                <label className="confirm-check intake-confirm">
+                  <input type="checkbox" checked={confirmed} disabled={busy} onChange={(event) => setConfirmed(event.target.checked)} />
+                  <span><strong>[필수] 개인정보 수집·이용 동의</strong><br />수집 항목: 업체명, 연락처, 업종·규모, 관심 제품·수량, 지역, 상담 내용. 이용 목적: 제품 정보·공식몰 참고 가격 안내, 상담 접수·담당자 연결, 영업 우선순위 산정. 보유 기간: 계정 및 상담 기록 삭제 시까지. 동의를 거부할 수 있으나, 거부 시 상담 접수와 제품 안내를 이용할 수 없습니다.</span>
+                </label>
+                <button className="primary analysis-button" type="button" onClick={submitInquiry} disabled={busy || !confirmed}>
+                  {busy ? <><span className="spinner" aria-hidden="true" />접수 중…</> : "상담 접수하고 제품 정보 확인"}
+                </button>
+              </>
+            ) : (
+              <div className="consultation-checklist">
+                <strong>상담에 필요한 내용</strong>
+                <ul><li>업체명과 연락처</li><li>사업장 업종과 규모</li><li>필요한 제품과 수량</li><li>설치 지역과 구매 시기</li></ul>
+                <p>한 문장에 여러 내용을 함께 적어도 됩니다.</p>
+              </div>
+            )}
+          </aside>
         ) : null}
 
         {result ? (
@@ -290,7 +300,7 @@ export default function PublicInquiry() {
           </section>
         ) : (
           <form className="chat-input" onSubmit={sendMessage}>
-            <label className="sr-only" htmlFor="message">상담 내용</label>
+            <div className="consultation-input-copy"><label htmlFor="message">상담 내용 추가</label><span>알고 계신 내용을 한 번에 적어주셔도 됩니다.</span></div>
             <div className="composer">
               <textarea
                 id="message"
@@ -301,16 +311,14 @@ export default function PublicInquiry() {
                   setInput(event.target.value);
                 }}
                 onKeyDown={submitFromKeyboard}
-                placeholder="예: 객실 12개 펜션인데 냉장고가 필요해요"
+                placeholder="예: 서울 성수동 호텔이고 객실용 세탁기 8대가 필요합니다"
                 maxLength={4000}
                 rows={1}
                 disabled={busy}
               />
-              <span>Enter 전송 · Shift+Enter 줄바꿈</span>
+              <span>Enter 전달 · Shift+Enter 줄바꿈</span>
             </div>
-            <button type="submit" className="send-button" disabled={busy || !input.trim()} aria-label="메시지 보내기">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11.5L21 3l-8.5 18-2-7.5z M10.5 13.5L21 3" /></svg>
-            </button>
+            <button type="submit" className="send-button" disabled={busy || !input.trim()}>내용 전달</button>
           </form>
         )}
         <footer className="chat-footer"><span aria-hidden="true">●</span> LG Deal Scale · 입력 정보는 상담과 제품 안내에 사용됩니다.</footer>
