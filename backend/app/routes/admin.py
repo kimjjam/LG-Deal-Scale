@@ -21,7 +21,7 @@ SBIZ_HEALTH_URL = "https://apis.data.go.kr/B553077/api/open/sdsc2/largeUpjongLis
 async def api_status(session: Session, _owner: OwnerStaff) -> dict[str, object]:
     settings = get_settings()
     services: list[dict[str, str]] = [
-        {"name": "LG E PARTNER PORTAL API", "status": "available", "detail": "백엔드 응답 정상"}
+        {"name": "LG ELECTRONICS PARTNER PORTAL API", "status": "available", "detail": "백엔드 응답 정상"}
     ]
     try:
         await session.execute(text("SELECT 1"))

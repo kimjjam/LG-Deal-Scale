@@ -6,7 +6,7 @@ import type { ChatMessage, ChatTurn, IntakeFields, PublicResult } from "../types
 const INITIAL_MESSAGES: ChatMessage[] = [
   {
     role: "assistant",
-    content: "안녕하세요. LG E PARTNER PORTAL 제품 도입 상담팀입니다. 사업장 상황과 필요한 제품을 편하게 말씀해주세요."
+    content: "안녕하세요. LG\u00a0ELECTRONICS\u00a0PARTNER\u00a0PORTAL 제품 도입 상담팀입니다. 사업장 상황과 필요한 제품을 편하게 말씀해주세요."
   }
 ];
 const PURCHASE_STAGE_OPTIONS: Array<NonNullable<IntakeFields["purchase_stage"]>> = [
@@ -151,7 +151,7 @@ export default function PublicInquiry() {
         <header className="chat-header">
           <div className="public-brand">
             <span className="brand-symbol public" aria-hidden="true">LG</span>
-            <div><h1>LG E PARTNER PORTAL 제품 도입 상담</h1><small>사업장 맞춤 제품 정보 안내</small></div>
+            <div><h1><span className="brand-name">LG ELECTRONICS PARTNER PORTAL</span> 제품 도입 상담</h1><small>사업장 맞춤 제품 정보 안내</small></div>
           </div>
         </header>
         <div className="public-intro">
@@ -175,7 +175,7 @@ export default function PublicInquiry() {
           </section>
           <button ref={startButtonRef} className="primary public-start-button" type="button" onClick={() => setStarted(true)}>제품 도입 상담 시작하기</button>
         </div>
-        <footer className="chat-footer"><span aria-hidden="true">●</span> LG E PARTNER PORTAL · 입력 정보는 상담과 제품 안내에 사용됩니다.</footer>
+        <footer className="chat-footer"><span aria-hidden="true">●</span> <span className="brand-name">LG ELECTRONICS PARTNER PORTAL</span> · 입력 정보는 상담과 제품 안내에 사용됩니다.</footer>
       </section>
     </main>
   );
@@ -186,7 +186,7 @@ export default function PublicInquiry() {
         <header className="chat-header">
           <div className="public-brand">
             <span className="brand-symbol public" aria-hidden="true">LG</span>
-            <div><h1 id="public-title">LG E PARTNER PORTAL 제품 도입 상담</h1><small>사업장 맞춤 제품 정보 안내</small></div>
+            <div><h1 id="public-title"><span className="brand-name">LG ELECTRONICS PARTNER PORTAL</span> 제품 도입 상담</h1><small>사업장 맞춤 제품 정보 안내</small></div>
           </div>
           <span className="consultation-status"><span aria-hidden="true" />온라인 상담 접수 중</span>
         </header>
@@ -354,7 +354,7 @@ export default function PublicInquiry() {
             <button type="submit" className="send-button" disabled={busy || !input.trim()}>내용 전달</button>
           </form>
         )}
-        <footer className="chat-footer"><span aria-hidden="true">●</span> LG E PARTNER PORTAL · 입력 정보는 상담과 제품 안내에 사용됩니다.</footer>
+        <footer className="chat-footer"><span aria-hidden="true">●</span> <span className="brand-name">LG ELECTRONICS PARTNER PORTAL</span> · 입력 정보는 상담과 제품 안내에 사용됩니다.</footer>
       </section>
     </main>
   );

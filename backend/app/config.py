@@ -16,7 +16,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_name: str = "LG E PARTNER PORTAL API"
+    app_name: str = "LG ELECTRONICS PARTNER PORTAL API"
     cors_origins: str = "http://localhost:5173"
     database_url: str = "sqlite+aiosqlite:///./directdesk.db"
     database_readonly_url: str | None = None

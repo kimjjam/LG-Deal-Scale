@@ -36,13 +36,13 @@ export default function Login({ onLogin }: { onLogin: (session: Session) => void
 
   return (
     <main className="login-page">
-      <section className="login-hero" aria-label="LG E PARTNER PORTAL 소개">
+      <section className="login-hero" aria-label="LG ELECTRONICS PARTNER PORTAL 소개">
         <a className="login-brand" href="/">
           <span className="brand-symbol" aria-hidden="true">LG</span>
-          <span>LG E PARTNER PORTAL</span>
+          <span className="brand-name">LG ELECTRONICS PARTNER PORTAL</span>
         </a>
         <div className="login-hero-copy">
-          <span className="eyebrow light">LG E PARTNER PORTAL 영업 워크스페이스</span>
+          <span className="eyebrow light"><span className="brand-name">LG ELECTRONICS PARTNER PORTAL</span> 영업 워크스페이스</span>
           <h1>문의부터 후속 영업까지<br />한곳에서 선명하게.</h1>
           <p>고객의 신호를 놓치지 않도록 우선순위를 정리하고, 담당자가 다음 행동에 집중할 수 있게 돕습니다.</p>
           <ul className="hero-points">
@@ -51,19 +51,19 @@ export default function Login({ onLogin }: { onLogin: (session: Session) => void
             <li><span aria-hidden="true">✓</span> 읽기 전용 자연어 데이터 검색</li>
           </ul>
         </div>
-        <p className="login-hero-foot">LG E PARTNER PORTAL · Sales intelligence</p>
+        <p className="login-hero-foot"><span className="brand-name">LG ELECTRONICS PARTNER PORTAL</span> · Sales intelligence</p>
       </section>
 
       <section className="login-form-side">
         <form className="login-panel" onSubmit={submit} aria-busy={busy}>
           <div className="mobile-login-brand">
             <span className="brand-symbol" aria-hidden="true">LG</span>
-            <strong>LG E PARTNER PORTAL</strong>
+            <strong className="brand-name">LG ELECTRONICS PARTNER PORTAL</strong>
           </div>
           <div className="login-heading">
             <span className="eyebrow">WELCOME BACK</span>
             <h2>영업 워크스페이스 로그인</h2>
-            <p>등록된 LG E PARTNER PORTAL 계정으로 계속하세요.</p>
+            <p>등록된 <span className="brand-name">LG ELECTRONICS PARTNER PORTAL</span> 계정으로 계속하세요.</p>
           </div>
 
           <div className="field-group">

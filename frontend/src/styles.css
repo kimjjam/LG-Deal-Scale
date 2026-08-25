@@ -119,6 +119,7 @@ textarea::placeholder { color: #9aa2a9; }
 .login-hero::before { width: 520px; height: 520px; right: -280px; top: -180px; }
 .login-hero::after { width: 320px; height: 320px; left: -210px; bottom: -150px; }
 .login-brand { display: inline-flex; align-items: center; gap: 12px; color: #fff; font-size: 18px; font-weight: 800; text-decoration: none; }
+.brand-name { white-space: nowrap; }
 .brand-symbol { width: 44px; height: 44px; display: inline-grid; place-items: center; flex: 0 0 auto; border-radius: 12px; background: var(--brand); color: #fff; font-size: 24px; font-weight: 900; letter-spacing: -0.08em; box-shadow: 0 5px 18px rgba(0, 0, 0, 0.16); }
 .brand-symbol.small { width: 38px; height: 38px; border-radius: 10px; font-size: 21px; box-shadow: none; }
 .brand-symbol.public { width: 38px; height: 38px; border-radius: 10px; background: #fff; color: var(--brand); box-shadow: none; }
@@ -151,7 +152,8 @@ textarea::placeholder { color: #9aa2a9; }
 .sidebar { position: sticky; top: 0; z-index: 20; height: 100vh; display: flex; flex-direction: column; padding: 20px 13px 16px; background: #1f2225; color: #fff; }
 .internal-brand { display: flex; align-items: center; gap: 11px; margin: 0 8px 30px; color: #fff; text-decoration: none; }
 .brand-copy { display: grid; gap: 1px; }
-.brand-copy strong { font-size: 15px; }
+.brand-copy strong { display: grid; gap: 1px; font-size: 15px; line-height: 1.05; }
+.brand-copy strong span { white-space: nowrap; }
 .brand-copy small { color: #858f98; font-size: 8px; font-weight: 700; letter-spacing: 0.16em; }
 .nav-group { display: grid; gap: 5px; }
 .nav-label { margin: 0 10px 7px; color: #727c85; font-size: 9px; font-weight: 800; letter-spacing: 0.16em; }
@@ -534,7 +536,7 @@ textarea::placeholder { color: #9aa2a9; }
 .send-button { min-width: 92px; height: 44px; padding: 0 15px; border: 0; border-radius: var(--radius-sm); background: var(--brand); color: #fff; font-size: 11px; font-weight: 800; }
 .send-button:hover:not(:disabled) { background: var(--brand-strong); }
 .chat-footer { min-height: 28px; display: flex; grid-column: 1 / -1; align-items: center; justify-content: center; gap: 5px; padding: 5px 12px max(5px, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: #fff; color: #929aa0; font-size: 8px; }
-.chat-footer span { color: var(--success); font-size: 6px; }
+.chat-footer > span[aria-hidden="true"] { color: var(--success); font-size: 6px; }
 .analysis-result { min-height: 0; grid-column: 1 / -1; grid-row: 3 / 6; overflow-y: auto; padding: 22px; background: #f6f8f9; }
 .result-confirmation { display: flex; align-items: flex-start; gap: 13px; padding: 18px; border: 1px solid #bde3d2; border-radius: var(--radius-md); background: var(--success-soft); }
 .result-check { width: 34px; height: 34px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 50%; background: var(--success); color: #fff; font-weight: 800; }

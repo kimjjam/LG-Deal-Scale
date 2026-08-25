@@ -20,7 +20,7 @@ def intent_prompt(content: str) -> str:
 
 def intake_prompt(messages: list[dict[str, str]], fields: dict[str, Any]) -> str:
     return (
-        "LG E PARTNER PORTAL 공개 상담 대화에서 새로 확인되거나 명시적으로 수정된 정보를 구조화하세요. "
+        "LG ELECTRONICS PARTNER PORTAL 공개 상담 대화에서 새로 확인되거나 명시적으로 수정된 정보를 구조화하세요. "
         "제품 FAQ에 답하거나 내부 고객 정보·점수·문의 이력을 노출하지 마세요.\n"
         "현재 필드는 이전 턴까지 확인된 기준값입니다. 대화에 명시적인 정정이 없는 기존 값은 바꾸거나 "
         "비우지 말고, 새 값과 정정값만 fields에 반환하세요. 한 문장에 여러 정보가 있으면 같은 턴에 모두 "
@@ -85,7 +85,7 @@ def outbound_prompt(
     previous_draft: dict[str, str] | None = None,
 ) -> str:
     return (
-        "LG E PARTNER PORTAL 담당자가 거래처에 보내는 공급 계약 제안 메일의 핵심 내용을 subject/body로 "
+        "LG ELECTRONICS PARTNER PORTAL 담당자가 거래처에 보내는 공급 계약 제안 메일의 핵심 내용을 subject/body로 "
         "작성하세요. 프로그램·서비스 소개, 홍보성 혜택, 상담 신청 유도, '관심 있으시면 연락 주세요'와 "
         "같은 연락 요청은 쓰지 마세요. body 첫 문단에서 공급 계약을 제안한다는 목적을 명확히 하고, "
         "1~2개의 짧은 문단으로 작성하세요. 인사말, 담당자 소개, 세부 조건 협의 문구, 서명은 서버가 "

@@ -807,7 +807,7 @@ async def generate_draft(lead_id: int, session: Session, staff: CurrentStaff) ->
     subject_core = result.subject.strip().removeprefix("[공급 계약 제안]").strip()
     subject = f"[공급 계약 제안] {subject_core}"
     body = (
-        f"안녕하세요. LG E PARTNER PORTAL 담당자 {sender_name}입니다.\n\n"
+        f"안녕하세요. LG ELECTRONICS PARTNER PORTAL 담당자 {sender_name}입니다.\n\n"
         f"{result.body.strip()}\n\n"
         "구체적인 공급 수량과 일정, 계약 조건은 검토 후 협의를 통해 정리하겠습니다.\n\n"
         f"감사합니다.\n{sender_name} 드림"
@@ -968,7 +968,7 @@ async def safe_send(draft_id: int, session: Session, staff: CurrentStaff) -> dic
                     "Idempotency-Key": f"directdesk-draft-{draft.id}",
                 },
                 json={
-                    "from": "LG E PARTNER PORTAL Test <onboarding@resend.dev>",
+                    "from": "LG ELECTRONICS PARTNER PORTAL Test <onboarding@resend.dev>",
                     "to": [settings.test_email_address],
                     "subject": draft.subject,
                     "text": draft.body,
