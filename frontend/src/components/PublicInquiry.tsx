@@ -9,6 +9,11 @@ const INITIAL_MESSAGES: ChatMessage[] = [
     content: "안녕하세요. LG Deal Scale 제품 도입 상담팀입니다. 사업장 상황과 필요한 제품을 편하게 말씀해주세요."
   }
 ];
+const PURCHASE_STAGE_OPTIONS: Array<NonNullable<IntakeFields["purchase_stage"]>> = [
+  "견적 요청",
+  "모델 비교",
+  "정보 수집"
+];
 
 const FIELD_LABELS: Array<{ key: keyof IntakeFields; label: string; suffix?: string }> = [
   { key: "business_name", label: "업체명" },
@@ -51,9 +56,7 @@ export default function PublicInquiry() {
     if (started && !busy && !result) inputRef.current?.focus();
   }, [started, busy, result]);
 
-  async function sendMessage(event: FormEvent) {
-    event.preventDefault();
-    const content = input.trim();
+  async function sendContent(content: string) {
     if (!content || busy) return;
     setConfirmed(false);
     setReady(false);
@@ -77,6 +80,11 @@ export default function PublicInquiry() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function sendMessage(event: FormEvent) {
+    event.preventDefault();
+    void sendContent(input.trim());
   }
 
   function submitFromKeyboard(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -121,6 +129,11 @@ export default function PublicInquiry() {
     const value = fields[key];
     return value === null || value === undefined || value === "" ? [] : [{ key, label, value: `${String(value)}${suffix ?? ""}` }];
   });
+  const latestMessage = messages[messages.length - 1];
+  const showPurchaseStageOptions = !busy
+    && !fields.purchase_stage
+    && latestMessage?.role === "assistant"
+    && PURCHASE_STAGE_OPTIONS.every((option) => latestMessage.content.includes(option));
 
   if (!started) return (
     <main className="public-page">
@@ -193,6 +206,16 @@ export default function PublicInquiry() {
               <p className={`bubble ${message.role}`}>{message.content}</p>
             </article>
           ))}
+          {showPurchaseStageOptions ? (
+            <section className="purchase-stage-choices" aria-labelledby="purchase-stage-title">
+              <strong id="purchase-stage-title">현재 구매 단계를 선택해주세요</strong>
+              <div>
+                {PURCHASE_STAGE_OPTIONS.map((option) => (
+                  <button type="button" key={option} onClick={() => void sendContent(option)}>{option}</button>
+                ))}
+              </div>
+            </section>
+          ) : null}
           {ready && !result ? (
             <article className="message-row assistant">
               <span className="speaker-label">상담 데스크</span>
