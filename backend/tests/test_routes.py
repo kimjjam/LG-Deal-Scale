@@ -71,6 +71,26 @@ class MultiTurnIntakeLLM:
         return result_type(message="확인했습니다.", fields=fields)
 
 
+class MissingInquiryIntakeLLM:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def structured(self, _prompt: str, result_type: type) -> object:
+        self.calls += 1
+        fields = (
+            IntakeFields(
+                business_name="잼민호텔",
+                business_type="숙박업",
+                product="세탁기",
+                quantity=8,
+                location="서울 성수동",
+            )
+            if self.calls == 1
+            else IntakeFields(phone="010-2222-5555")
+        )
+        return result_type(message="확인했습니다.", fields=fields)
+
+
 class SearchLLM:
     def __init__(self, response: str = "", fail: bool = False) -> None:
         self.response = response
@@ -125,6 +145,30 @@ async def test_public_chat_accumulates_sparse_llm_fields_across_turns(
 
     assert second.ready_for_analysis is True
     assert second.fields.model_dump() == {**first.fields.model_dump(), "quantity": 6}
+
+
+@pytest.mark.asyncio
+async def test_public_chat_reuses_product_request_as_missing_inquiry_summary(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    llm = MissingInquiryIntakeLLM()
+    monkeypatch.setattr(public, "get_llm_client", lambda: llm)
+    request = Request({"type": "http", "client": ("127.0.0.1", 1)})
+    details = ChatMessage(role="user", content="서울 성수동 잼민호텔 세탁기 8대")
+    first = await public.chat.__wrapped__(
+        request, ChatTurnRequest(messages=[details]), session
+    )
+    second = await public.chat.__wrapped__(
+        request,
+        ChatTurnRequest(
+            messages=[details, ChatMessage(role="user", content="01022225555")],
+            fields=first.fields,
+        ),
+        session,
+    )
+
+    assert second.fields.inquiry == details.content
+    assert "어떤 제품이 얼마나" not in second.message
 
 
 @pytest.mark.asyncio
@@ -293,7 +337,7 @@ async def test_outbound_draft_payload_and_dashboard_mode(
 
     assert created["subject"] == "[공급 계약 제안] 맞춤 제안"
     assert created["body"] == (
-        "안녕하세요. 다온비즈 담당자 김담당입니다.\n\n"
+        "안녕하세요. LG Deal Scale 담당자 김담당입니다.\n\n"
         "숙박업 운영 환경에 맞춘 제안입니다.\n\n"
         "구체적인 공급 수량과 일정, 계약 조건은 검토 후 협의를 통해 정리하겠습니다.\n\n"
         "감사합니다.\n김담당 드림"

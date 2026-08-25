@@ -6,7 +6,7 @@ import type { ChatMessage, ChatTurn, IntakeFields, PublicResult } from "../types
 const INITIAL_MESSAGES: ChatMessage[] = [
   {
     role: "assistant",
-    content: "안녕하세요. 다온비즈 독립 제품 비교 안내입니다. 업체 상황과 필요한 가전제품을 말씀해주세요."
+    content: "안녕하세요. LG Deal Scale 제품 비교 안내입니다. 업체 상황과 필요한 가전제품을 말씀해주세요."
   }
 ];
 
@@ -127,15 +127,15 @@ export default function PublicInquiry() {
       <section className="chat-shell public-landing" aria-labelledby="public-intro-title">
         <header className="chat-header">
           <div className="public-brand">
-            <span className="brand-symbol public" aria-hidden="true">D</span>
-            <div><h1>다온비즈 | LG전자 등 제품 정보 비교</h1><small>독립 제품 비교 안내 서비스</small></div>
+            <span className="brand-symbol public" aria-hidden="true">LG</span>
+            <div><h1>LG Deal Scale | LG전자 등 제품 정보 비교</h1><small>제품 비교 안내 서비스</small></div>
           </div>
         </header>
         <div className="public-intro">
           <div>
             <h2 id="public-intro-title">사업장용 가전제품 정보와 공식몰 참고 가격을 한눈에 확인하세요</h2>
             <p>업종·규모·필요 수량을 입력하면 등록된 제품 정보, 공식몰 참고 가격, 공식 링크와 상담 경로를 안내합니다.</p>
-            <p className="service-disclaimer">다온비즈는 LG전자의 공식·제휴 서비스가 아닌 독립 제품 비교 안내 서비스입니다.</p>
+            <p className="service-disclaimer">LG Deal Scale 제품 비교 안내 서비스입니다.</p>
           </div>
           <ol>
             <li><strong>상황 확인</strong><span>업종, 규모, 제품, 수량과 구매 시기를 물어봅니다.</span></li>
@@ -152,7 +152,7 @@ export default function PublicInquiry() {
           </section>
           <button ref={startButtonRef} className="primary public-start-button" type="button" onClick={() => setStarted(true)}>제품 비교 시작하기</button>
         </div>
-        <footer className="chat-footer"><span aria-hidden="true">●</span> 독립 비교 서비스 · 입력 정보는 상담과 제품 안내에 사용됩니다.</footer>
+        <footer className="chat-footer"><span aria-hidden="true">●</span> LG Deal Scale · 입력 정보는 상담과 제품 안내에 사용됩니다.</footer>
       </section>
     </main>
   );
@@ -162,8 +162,8 @@ export default function PublicInquiry() {
       <section className="chat-shell" aria-labelledby="public-title">
         <header className="chat-header">
           <div className="public-brand">
-            <span className="brand-symbol public" aria-hidden="true">D</span>
-            <div><h1 id="public-title">다온비즈 | LG전자 등 제품 정보 비교</h1><small>LG전자 공식·제휴 서비스가 아닌 독립 비교 서비스</small></div>
+            <span className="brand-symbol public" aria-hidden="true">LG</span>
+            <div><h1 id="public-title">LG Deal Scale | LG전자 등 제품 정보 비교</h1><small>제품 비교 안내 서비스</small></div>
           </div>
           <span className="chat-status"><span aria-hidden="true" />상담 가능</span>
         </header>
@@ -189,19 +189,19 @@ export default function PublicInquiry() {
           {returningCustomer ? <p className="returning">이전에 상담하신 연락처로 확인됐어요.</p> : null}
           {messages.map((message, index) => (
             <div className={`message-row ${message.role}`} key={`${message.role}-${index}`}>
-              {message.role === "assistant" ? <span className="message-avatar" aria-hidden="true">D</span> : null}
+              {message.role === "assistant" ? <span className="message-avatar" aria-hidden="true">LG</span> : null}
               <p className={`bubble ${message.role}`}>{message.content}</p>
             </div>
           ))}
           {ready && !result ? (
             <div className="message-row assistant">
-              <span className="message-avatar" aria-hidden="true">D</span>
+              <span className="message-avatar" aria-hidden="true">LG</span>
               <p className="bubble assistant submission-guidance">수정하거나 추가할 내용이 있다면 지금 말씀해주세요. 아래 버튼을 누르면 상담 요청이 접수되고 담당자에게 전달됩니다.</p>
             </div>
           ) : null}
           {busy ? (
             <div className="message-row assistant" role="status">
-              <span className="message-avatar" aria-hidden="true">D</span>
+              <span className="message-avatar" aria-hidden="true">LG</span>
               <p className="bubble assistant typing"><span aria-hidden="true" /><span aria-hidden="true" /><span aria-hidden="true" /><span className="sr-only">내용을 확인하고 있어요.</span></p>
             </div>
           ) : null}
@@ -313,7 +313,7 @@ export default function PublicInquiry() {
             </button>
           </form>
         )}
-        <footer className="chat-footer"><span aria-hidden="true">●</span> 독립 비교 서비스 · 입력 정보는 상담과 제품 안내에 사용됩니다.</footer>
+        <footer className="chat-footer"><span aria-hidden="true">●</span> LG Deal Scale · 입력 정보는 상담과 제품 안내에 사용됩니다.</footer>
       </section>
     </main>
   );

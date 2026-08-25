@@ -263,6 +263,16 @@ async def chat(request: Request, payload: ChatTurnRequest, session: Session) -> 
     result.fields = payload.fields.model_copy(
         update=result.fields.model_dump(exclude_none=True)
     )
+    if not result.fields.inquiry and result.fields.product and result.fields.quantity:
+        result.fields.inquiry = next(
+            (
+                message.content
+                for message in reversed(payload.messages)
+                if message.role == "user"
+                and result.fields.product.lower() in message.content.lower()
+            ),
+            None,
+        )
     returning_customer = False
     if result.fields.phone:
         returning_customer = (
