@@ -3,6 +3,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type {
   Account,
+  AccountDataQuality,
   AccountOverview,
   ActivityType,
   Session,
@@ -28,6 +29,8 @@ export default function Accounts({ session }: { session: Session }) {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [staff, setStaff] = useState<StaffMember[]>([]);
   const [overview, setOverview] = useState<AccountOverview | null>(null);
+  const [dataQuality, setDataQuality] = useState<AccountDataQuality | null>(null);
+  const [dataQualityError, setDataQualityError] = useState(false);
   const [loadingAccount, setLoadingAccount] = useState<Account | null>(null);
   const [q, setQ] = useState("");
   const [search, setSearch] = useState("");
@@ -51,12 +54,18 @@ export default function Accounts({ session }: { session: Session }) {
   async function loadOverview(accountId: number) {
     const request = ++overviewRequest.current;
     setError("");
+    setOverview(null);
+    setDataQuality(null);
+    setDataQualityError(false);
+    void api<AccountDataQuality>(`/accounts/${accountId}/data-quality`, {}, session)
+      .then((quality) => {
+        if (request === overviewRequest.current) setDataQuality(quality);
+      })
+      .catch(() => {
+        if (request === overviewRequest.current) setDataQualityError(true);
+      });
     try {
-      const result = await api<AccountOverview>(
-        `/accounts/${accountId}/overview`,
-        {},
-        session,
-      );
+      const result = await api<AccountOverview>(`/accounts/${accountId}/overview`, {}, session);
       if (request === overviewRequest.current) {
         setOverview(result);
         setLoadingAccount(null);
@@ -160,6 +169,7 @@ export default function Accounts({ session }: { session: Session }) {
           {error}
         </p>
       ) : null}
+      {canAssign ? <CreateAccount busy={busy} onCreated={async (payload) => { setBusy(true); setError(""); try { await api("/accounts", { method: "POST", body: JSON.stringify(payload) }, session); await loadAccounts(); return true; } catch (requestError) { setError(message(requestError, "고객사를 등록하지 못했습니다.")); return false; } finally { setBusy(false); } }} /> : null}
       {loading ? (
         <LoadingState label="고객사를 불러오는 중" />
       ) : (
@@ -242,16 +252,18 @@ export default function Accounts({ session }: { session: Session }) {
       {overview ? (
         <AccountDetail
           overview={overview}
+          dataQuality={dataQuality}
+          dataQualityError={dataQualityError}
           staff={staff}
           canAssign={canAssign}
           busy={busy}
-          onClose={() => setOverview(null)}
+          onClose={() => { overviewRequest.current += 1; setOverview(null); setDataQuality(null); }}
           perform={perform}
         />
       ) : loadingAccount ? (
         <AccountDetailShell
           account={loadingAccount}
-          onClose={() => setLoadingAccount(null)}
+          onClose={() => { overviewRequest.current += 1; setLoadingAccount(null); setDataQuality(null); }}
         />
       ) : null}
     </section>
@@ -289,6 +301,8 @@ function AccountDetailShell({
 
 function AccountDetail({
   overview,
+  dataQuality,
+  dataQualityError,
   staff,
   canAssign,
   busy,
@@ -296,6 +310,8 @@ function AccountDetail({
   perform,
 }: {
   overview: AccountOverview;
+  dataQuality: AccountDataQuality | null;
+  dataQualityError: boolean;
   staff: StaffMember[];
   canAssign: boolean;
   busy: boolean;
@@ -319,6 +335,11 @@ function AccountDetail({
         </button>
       </div>
       <div className="panel-content crm-detail">
+        {dataQualityError ? <p className="notice" role="status">데이터 품질 경고를 불러오지 못했습니다. 상세 정보는 계속 이용할 수 있습니다.</p> : null}
+        {dataQuality?.duplicate_contacts.length ? <p className="notice" role="status">같은 고객사 안에 전화·이메일이 중복된 담당자 {dataQuality.duplicate_contacts.length}건이 있습니다. 확인 후 수동으로 정리해주세요.</p> : null}
+        <section>
+          <AccountEditForm account={account} busy={busy} perform={perform} />
+        </section>
         <section>
           <div className="section-heading compact">
             <h3>담당자</h3>
@@ -494,10 +515,11 @@ function ActivityForm({ accountId, busy, perform }: FormProps) {
   const [content, setContent] = useState("");
   return (
     <details className="inline-form">
-      <summary>활동 기록</summary>
+      <summary>응대 기록</summary>
       <form
         onSubmit={async (event) => {
           event.preventDefault();
+          if ((type === "call" || type === "email") && !content.trim()) return;
           if (
             await perform(() =>
               api("/crm/activities", {
@@ -531,6 +553,7 @@ function ActivityForm({ accountId, busy, perform }: FormProps) {
           <textarea
             value={content}
             onChange={(event) => setContent(event.target.value)}
+            required={type === "call" || type === "email"}
             maxLength={10000}
           />
         </label>
@@ -687,6 +710,36 @@ function money(value: string | number | null) {
   return value == null
     ? "금액 미정"
     : `${Number(value).toLocaleString("ko-KR")}원`;
+}
+
+type AccountCandidate = Pick<Account, "id" | "name" | "phone">;
+
+function NameCandidateWarning({ name, excludeId }: { name: string; excludeId?: number }) {
+  const [result, setResult] = useState<{ name: string; candidates: AccountCandidate[] }>({ name: "", candidates: [] });
+  useEffect(() => {
+    const normalized = name.trim();
+    if (!normalized) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void api<AccountCandidate[]>(`/accounts/data-quality/name-candidates?name=${encodeURIComponent(normalized)}`, { signal: controller.signal })
+        .then((rows) => setResult({ name: normalized, candidates: rows.filter((row) => row.id !== excludeId) }))
+        .catch(() => undefined);
+    }, 250);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [excludeId, name]);
+  return result.name === name.trim() && result.candidates.length ? <p className="notice" role="status">같은 이름의 고객사 {result.candidates.map((row) => `${row.name} (${row.phone})`).join(", ")}가 이미 있습니다. 저장 전 확인해주세요.</p> : null;
+}
+
+function CreateAccount({ busy, onCreated }: { busy: boolean; onCreated: (payload: { name: string; phone: string; attributes: Record<string, never> }) => Promise<boolean> }) {
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  return <details className="create-strip"><summary>새 고객사</summary><form onSubmit={async (event) => { event.preventDefault(); if (await onCreated({ name, phone, attributes: {} })) { setName(""); setPhone(""); } }}><label>업체명<input value={name} onChange={(event) => setName(event.target.value)} required maxLength={200} /></label><label>연락처<input value={phone} onChange={(event) => setPhone(event.target.value)} required inputMode="tel" /></label><NameCandidateWarning name={name} /><button className="primary" disabled={busy}>등록</button></form></details>;
+}
+
+function AccountEditForm({ account, busy, perform }: { account: Account; busy: boolean; perform: (action: () => Promise<unknown>) => Promise<boolean> }) {
+  const [name, setName] = useState(account.name);
+  const [phone, setPhone] = useState(account.phone);
+  return <details className="inline-form"><summary>고객사 정보 수정</summary><form onSubmit={(event) => { event.preventDefault(); void perform(() => api(`/accounts/${account.id}`, { method: "PUT", body: JSON.stringify({ name, phone, attributes: account.attributes }) })); }}><label>업체명<input value={name} onChange={(event) => setName(event.target.value)} required maxLength={200} /></label><label>연락처<input value={phone} onChange={(event) => setPhone(event.target.value)} required inputMode="tel" /></label><NameCandidateWarning name={name} excludeId={account.id} /><button className="primary" disabled={busy}>저장</button></form></details>;
 }
 function businessScale(attributes: Record<string, unknown>) {
   const scales = [

@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.database import get_session
-from app.models import Account, Assignment, AuditLog, Contact, Inquiry, Staff
+from app.models import Account, Assignment, AuditLog, Contact, Inquiry, Lead, SalesRegion, Staff
 from app.routes.accounts import (
     create_contact,
     delete_account,
@@ -26,7 +26,7 @@ from app.routes.accounts import router as accounts_router
 from app.routes.admin import api_status
 from app.routes.admin import router as admin_router
 from app.routes.inquiries import router
-from app.routes.outbound import router as outbound_router
+from app.routes.search import router as search_router
 from app.routes.staff import (
     create_staff,
     reset_staff_password,
@@ -103,40 +103,39 @@ def test_rep_manual_assignment_returns_403() -> None:
     assert response.status_code == 403
 
 
-@pytest.mark.parametrize(
-    ("method", "path", "payload"),
-    [
-        ("put", "/api/outbound/leads/1/stage", {"pipeline_stage": "dropped"}),
-        (
-            "post",
-            "/api/outbound/leads/1/convert",
-            {
-                "phone": "01012345678",
-                "assignee_id": str(uuid.uuid4()),
-                "opportunity_title": "전환",
-            },
-        ),
-        ("post", "/api/outbound/leads/1/drafts", None),
-        ("patch", "/api/outbound/drafts/1", {"subject": "제목", "body": "본문"}),
-        (
-            "post",
-            "/api/outbound/leads/1/actual-contact",
-            {"channel": "phone", "note": "통화"},
-        ),
-        ("post", "/api/outbound/leads/1/stop", None),
-        ("post", "/api/outbound/drafts/1/review", None),
-        ("post", "/api/outbound/drafts/1/send", None),
-    ],
-)
-def test_rep_cannot_mutate_outbound(method: str, path: str, payload: object) -> None:
-    app = FastAPI()
-    app.include_router(outbound_router)
+def test_rep_cannot_mutate_unowned_outbound() -> None:
+    from app.routes.outbound import require_lead_access
+
     rep = Staff(
         id=uuid.uuid4(),
         name="일반 담당자",
         email="outbound-rep@example.test",
         hashed_password="not-used",
         role="rep",
+    )
+    lead = Lead(
+        name="다른 담당자의 리드",
+        source="csv",
+        raw_data={},
+        lead_score=50,
+        lead_score_reasoning={},
+        assignee_id=uuid.uuid4(),
+    )
+    with pytest.raises(HTTPException) as error:
+        require_lead_access(lead, rep)
+    assert error.value.status_code == 403
+
+
+@pytest.mark.parametrize("role", ["manager", "rep"])
+def test_non_owner_cannot_use_natural_language_search(role: str) -> None:
+    app = FastAPI()
+    app.include_router(search_router)
+    rep = Staff(
+        id=uuid.uuid4(),
+        name="일반 담당자",
+        email="search-rep@example.test",
+        hashed_password="not-used",
+        role=role,
     )
 
     async def override_staff() -> Staff:
@@ -148,7 +147,7 @@ def test_rep_cannot_mutate_outbound(method: str, path: str, payload: object) -> 
     app.dependency_overrides[get_current_staff] = override_staff
     app.dependency_overrides[get_session] = override_session
     with TestClient(app) as client:
-        response = client.request(method, path, json=payload)
+        response = client.post("/api/search", json={"question": "전체 리드 연락처"})
     assert response.status_code == 403
 
 
@@ -204,6 +203,30 @@ def test_manager_cannot_change_staff_active_state() -> None:
     app.dependency_overrides[get_session] = override_session
     with TestClient(app) as client:
         response = client.patch(f"/api/staff/{uuid.uuid4()}/active", json={"is_active": False})
+    assert response.status_code == 403
+
+
+def test_manager_cannot_change_own_role() -> None:
+    app = FastAPI()
+    app.include_router(staff_router)
+    manager = Staff(
+        id=uuid.uuid4(),
+        name="관리자",
+        email="self-role-manager@example.test",
+        hashed_password="not-used",
+        role="manager",
+    )
+
+    async def override_staff() -> Staff:
+        return manager
+
+    async def override_session() -> AsyncIterator[None]:
+        yield None
+
+    app.dependency_overrides[get_current_staff] = override_staff
+    app.dependency_overrides[get_session] = override_session
+    with TestClient(app) as client:
+        response = client.patch(f"/api/staff/{manager.id}/role", json={"role": "manager"})
     assert response.status_code == 403
 
 
@@ -331,6 +354,42 @@ async def test_current_unresolved_assignments_block_rep_role_and_active_changes(
         historical.id, StaffActiveUpdate(is_active=False), session, owner
     )
     assert updated.is_active is False
+
+
+@pytest.mark.asyncio
+async def test_active_assigned_lead_blocks_staff_deactivation(session: AsyncSession) -> None:
+    owner = Staff(
+        id=uuid.uuid4(),
+        name="총관리자",
+        email="lead-owner@example.test",
+        hashed_password="not-used",
+        role="owner",
+    )
+    rep = Staff(
+        id=uuid.uuid4(),
+        name="리드 담당자",
+        email="lead-rep@example.test",
+        hashed_password="not-used",
+        role="rep",
+    )
+    session.add_all([owner, rep])
+    await session.flush()
+    session.add(
+        Lead(
+            name="진행 중 리드",
+            source="csv",
+            raw_data={},
+            lead_score=50,
+            lead_score_reasoning={},
+            assignee_id=rep.id,
+        )
+    )
+    await session.commit()
+
+    with pytest.raises(HTTPException) as error:
+        await update_staff_active(rep.id, StaffActiveUpdate(is_active=False), session, owner)
+    assert error.value.status_code == 409
+    assert rep.is_active is True
 
 
 @pytest.mark.asyncio
@@ -467,9 +526,12 @@ async def test_contact_soft_delete_is_audited(session: AsyncSession) -> None:
         hashed_password="not-used",
         role="manager",
     )
-    account = Account(name="감사 고객사", phone="01099990000", attributes={})
+    account = Account(
+        name="감사 고객사", phone="01099990000", attributes={"location": "서울 중구"}
+    )
     session.add_all([manager, account])
     await session.flush()
+    session.add(SalesRegion(region_name="서울", match_keyword="서울", manager_id=manager.id))
     contact = Contact(account_id=account.id, name="삭제 담당자")
     session.add(contact)
     await session.commit()
@@ -531,9 +593,7 @@ async def test_owner_api_status_does_not_expose_secrets(
             email_provider_api_key=None,
         ),
     )
-    monkeypatch.setattr(
-        "app.routes.admin.httpx.AsyncClient", lambda **_kwargs: ApiStatusClient()
-    )
+    monkeypatch.setattr("app.routes.admin.httpx.AsyncClient", lambda **_kwargs: ApiStatusClient())
 
     result = await api_status(session, owner)
 

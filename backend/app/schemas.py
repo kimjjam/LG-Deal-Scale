@@ -1,5 +1,5 @@
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -16,16 +16,24 @@ OpportunityStage = Literal["qualify", "develop", "propose", "won", "lost"]
 TaskStatus = Literal["pending", "completed"]
 OPPORTUNITY_AMOUNT_MAX = Decimal("999999999999.99")
 REGION_ALIASES = {
-    "서울특별시": "서울",
-    "서울시": "서울",
-    "부산광역시": "부산",
-    "대구광역시": "대구",
-    "인천광역시": "인천",
-    "광주광역시": "광주",
-    "대전광역시": "대전",
-    "울산광역시": "울산",
-    "세종특별자치시": "세종",
-    "경기도": "경기",
+    "서울": ("서울특별시", "서울시", "서울"),
+    "부산": ("부산광역시", "부산시", "부산"),
+    "대구": ("대구광역시", "대구시", "대구"),
+    "인천": ("인천광역시", "인천시", "인천"),
+    # "광주시" is deliberately excluded: it can mean Gyeonggi-do Gwangju-si.
+    "광주": ("광주광역시", "광주"),
+    "대전": ("대전광역시", "대전시", "대전"),
+    "울산": ("울산광역시", "울산시", "울산"),
+    "세종": ("세종특별자치시", "세종시", "세종"),
+    "경기": ("경기도", "경기"),
+    "강원": ("강원특별자치도", "강원도", "강원"),
+    "충북": ("충청북도", "충북"),
+    "충남": ("충청남도", "충남"),
+    "전북": ("전북특별자치도", "전라북도", "전북"),
+    "전남": ("전라남도", "전남"),
+    "경북": ("경상북도", "경북"),
+    "경남": ("경상남도", "경남"),
+    "제주": ("제주특별자치도", "제주도", "제주"),
 }
 try:
     SEOUL_TIMEZONE = ZoneInfo("Asia/Seoul")
@@ -54,14 +62,60 @@ def normalize_region_text(value: object) -> str:
     if not isinstance(value, str):
         raise ValueError("지역을 입력해주세요.")  # noqa: TRY004 - Pydantic converts to 422
     normalized = "".join(value.split()).casefold()
-    for official, short in REGION_ALIASES.items():
-        normalized = normalized.replace(official.casefold(), short)
+    matched = top_level_region(normalized)
+    if not matched:
+        return normalized
+    canonical, alias = matched
+    return canonical + normalized[len(alias) :]
+
+
+def top_level_region(value: object) -> tuple[str, str] | None:
+    if not isinstance(value, str):
+        return None
+    normalized = "".join(value.split()).casefold()
+    if normalized.startswith(("광주시", "제주시")):
+        return None
+    matches = (
+        (canonical, alias.casefold())
+        for canonical, aliases in REGION_ALIASES.items()
+        for alias in aliases
+        if normalized.startswith(alias.casefold())
+    )
+    return max(matches, key=lambda item: len(item[1]), default=None)
+
+
+def has_top_level_region(value: object) -> bool:
+    return top_level_region(value) is not None
+
+
+def region_keyword_matches(location: object, keyword: object, *, bidirectional: bool = False) -> bool:
+    location_top = top_level_region(location)
+    keyword_top = top_level_region(keyword)
+    if not location_top or not keyword_top or location_top[0] != keyword_top[0]:
+        return False
+    normalized_location = normalize_region_text(location)
+    normalized_keyword = normalize_region_text(keyword)
+    return normalized_location.startswith(normalized_keyword) or (
+        bidirectional and normalized_keyword.startswith(normalized_location)
+    )
+
+
+def normalize_routable_region(value: object) -> str:
+    normalized = normalize_region_text(value)
+    if not has_top_level_region(normalized):
+        raise ValueError("시·도를 포함한 지역을 입력해주세요. 예: 서울특별시 중구")
     return normalized
 
 
 def seoul_business_date(now: datetime | None = None) -> date:
     instant = now or datetime.now(timezone.utc)
     return instant.astimezone(SEOUL_TIMEZONE).date()
+
+
+def seoul_day_bounds(now: datetime | None = None) -> tuple[datetime, datetime]:
+    today = seoul_business_date(now)
+    start = datetime.combine(today, time.min, SEOUL_TIMEZONE).astimezone(timezone.utc)
+    return start, start + timedelta(days=1)
 
 
 class LoginRequest(BaseModel):
@@ -147,7 +201,9 @@ class IntakeFields(BaseModel):
     purchase_stage: PurchaseStage | None = None
     purchase_timing: PurchaseTiming | None = None
 
-    @field_validator("business_name", "inquiry", "business_type", mode="before")
+    @field_validator(
+        "business_name", "inquiry", "business_type", "product", "location", mode="before"
+    )
     @classmethod
     def strip_required_text(cls, value: Any) -> Any:
         if value is None:
@@ -211,6 +267,16 @@ class PublicSubmissionResponse(BaseModel):
     stores: list[NearbyStore] = Field(default_factory=list)
     nearby_store_status: NearbyStoreStatus
     nearby_store_message: str
+    regional_team_connected: bool = False
+    partner: "PublicPartnerSummary | None" = None
+
+
+class PublicPartnerSummary(BaseModel):
+    name: str
+    address: str
+    phone: str | None
+    partner_type: str
+    verified_at: date
 
 
 class ManualAssignmentRequest(BaseModel):
@@ -228,7 +294,7 @@ class SalesRegionCreate(BaseModel):
     is_active: bool = True
 
     _strip_name = field_validator("region_name", mode="before")(strip_nonblank)
-    _normalize_keyword = field_validator("match_keyword", mode="before")(normalize_region_text)
+    _normalize_keyword = field_validator("match_keyword", mode="before")(normalize_routable_region)
 
 
 class SalesRegionUpdate(BaseModel):
@@ -238,7 +304,7 @@ class SalesRegionUpdate(BaseModel):
     is_active: bool | None = None
 
     _strip_name = field_validator("region_name", mode="before")(strip_nonblank)
-    _normalize_keyword = field_validator("match_keyword", mode="before")(normalize_region_text)
+    _normalize_keyword = field_validator("match_keyword", mode="before")(normalize_routable_region)
 
     @model_validator(mode="after")
     def reject_null_values(self) -> "SalesRegionUpdate":
@@ -257,9 +323,17 @@ class PartnerCreate(BaseModel):
     verified_at: date
     is_active: bool = True
 
-    _strip_strings = field_validator(
-        "name", "address", "region", "verification_source", mode="before"
-    )(strip_nonblank)
+    _strip_strings = field_validator("name", "address", "verification_source", mode="before")(
+        strip_nonblank
+    )
+
+    @field_validator("region", mode="before")
+    @classmethod
+    def validate_region(cls, value: object) -> str:
+        region = strip_nonblank(value)
+        if not has_top_level_region(region):
+            raise ValueError("시·도를 포함한 지역을 입력해주세요. 예: 서울특별시 중구")
+        return region
 
     @field_validator("phone", mode="before")
     @classmethod
@@ -284,9 +358,17 @@ class PartnerUpdate(BaseModel):
     verified_at: date | None = None
     is_active: bool | None = None
 
-    _strip_strings = field_validator(
-        "name", "address", "region", "verification_source", mode="before"
-    )(strip_nonblank)
+    _strip_strings = field_validator("name", "address", "verification_source", mode="before")(
+        strip_nonblank
+    )
+
+    @field_validator("region", mode="before")
+    @classmethod
+    def validate_region(cls, value: object) -> str:
+        region = strip_nonblank(value)
+        if not has_top_level_region(region):
+            raise ValueError("시·도를 포함한 지역을 입력해주세요. 예: 서울특별시 중구")
+        return region
 
     @field_validator("phone", mode="before")
     @classmethod
@@ -342,6 +424,30 @@ class LeadStageRequest(BaseModel):
     ]
 
 
+class LeadUpdateRequest(BaseModel):
+    assignee_id: uuid.UUID | None = None
+    contact_name: str | None = Field(default=None, max_length=100)
+    contact_phone: str | None = Field(default=None, max_length=30)
+    contact_email: EmailStr | None = None
+    next_action_at: datetime | None = None
+
+    @field_validator("contact_phone", mode="before")
+    @classmethod
+    def normalize_optional_phone(cls, value: str | None) -> str | None:
+        return normalize_phone(value) if value else value
+
+    @field_validator("next_action_at")
+    @classmethod
+    def validate_next_action_at(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.utcoffset() is None:
+            raise ValueError("다음 행동일에는 시간대 정보가 필요합니다.")
+        if value <= datetime.now(timezone.utc):
+            raise ValueError("다음 행동일은 현재보다 이후여야 합니다.")
+        return value
+
+
 class StaffIdentity(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -387,6 +493,7 @@ class OpportunityCreate(BaseModel):
 
 
 class OpportunityUpdate(BaseModel):
+    expected_updated_at: datetime
     assignee_id: uuid.UUID | None = None
     title: str | None = Field(default=None, min_length=1, max_length=200)
     amount: Decimal | None = Field(
@@ -396,6 +503,7 @@ class OpportunityUpdate(BaseModel):
     expected_close_date: date | None = None
     stage: OpportunityStage | None = None
     loss_reason: str | None = Field(default=None, max_length=500)
+    items: list["OpportunityItemInput"] | None = Field(default=None, max_length=100)
 
     @model_validator(mode="after")
     def reject_null_required_fields(self) -> "OpportunityUpdate":
@@ -409,11 +517,45 @@ class OpportunityResponse(OpportunityCreate):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    items: list["OpportunityItemResponse"] = Field(default_factory=list)
+    items_total: Decimal
     created_at: datetime
     updated_at: datetime
 
 
-class ActivityCreate(BaseModel):
+class OpportunityItemInput(BaseModel):
+    id: int | None = None
+    product_id: int | None = None
+    product_name: str = Field(min_length=1, max_length=200)
+    quantity: int = Field(gt=0, le=100_000)
+    unit_price: Decimal = Field(ge=0, le=OPPORTUNITY_AMOUNT_MAX, max_digits=14, decimal_places=2)
+
+    _strip_product_name = field_validator("product_name", mode="before")(strip_nonblank)
+
+
+class OpportunityItemResponse(OpportunityItemInput):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    opportunity_id: int
+
+
+class OpportunityItemsReplace(BaseModel):
+    expected_updated_at: datetime
+    items: list[OpportunityItemInput] = Field(max_length=100)
+
+
+class VerifiedProductResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    brand: str
+    category: str
+    price: Decimal
+
+
+class ActivityPayload(BaseModel):
     account_id: int
     type: ActivityType
     staff_id: uuid.UUID | None = None
@@ -425,7 +567,16 @@ class ActivityCreate(BaseModel):
     amount: Decimal | None = Field(default=None, ge=0)
 
 
-class ActivityResponse(ActivityCreate):
+class ActivityCreate(ActivityPayload):
+
+    @model_validator(mode="after")
+    def require_response_content(self) -> "ActivityCreate":
+        if self.type in {"call", "email"}:
+            self.content = strip_nonblank(self.content)
+        return self
+
+
+class ActivityResponse(ActivityPayload):
     model_config = ConfigDict(from_attributes=True)
 
     id: int

@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import record_audit
 from app.database import get_session
-from app.models import Assignment, Inquiry, SalesRegion, Staff
+from app.models import Assignment, Inquiry, Lead, SalesRegion, Staff
 from app.schemas import (
     StaffActiveUpdate,
     StaffCreate,
@@ -93,6 +93,18 @@ async def require_no_current_unresolved_assignments(
         raise HTTPException(
             status_code=409,
             detail="미해결 문의를 다른 담당자에게 재배정한 후 변경해주세요.",
+        )
+    if await session.scalar(
+        select(Lead.id)
+        .where(
+            Lead.assignee_id == staff_id,
+            Lead.pipeline_stage.not_in(("converted", "dropped")),
+        )
+        .limit(1)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="진행 중인 담당 리드를 먼저 재배정해주세요.",
         )
 
 

@@ -4,9 +4,18 @@ from sqlglot import exp, parse
 from sqlglot.errors import ParseError
 
 SCHEMA_WHITELIST: dict[str, set[str]] = {
-    "accounts": {"id", "name", "phone", "attributes", "created_at"},
-    "contacts": {"id", "account_id", "name", "role", "phone", "email"},
-    "inquiries": {"id", "account_id", "channel", "content", "status", "created_at"},
+    "accounts": {"id", "name", "phone", "attributes", "created_at", "deleted_at"},
+    "contacts": {"id", "account_id", "name", "role", "phone", "email", "deleted_at"},
+    "inquiries": {
+        "id",
+        "account_id",
+        "channel",
+        "content",
+        "routing_manager_id",
+        "partner_id",
+        "status",
+        "created_at",
+    },
     "interactions": {
         "id",
         "account_id",
@@ -15,6 +24,8 @@ SCHEMA_WHITELIST: dict[str, set[str]] = {
         "inquiry_id",
         "opportunity_id",
         "type",
+        "content",
+        "outcome",
         "amount",
         "created_at",
     },
@@ -31,7 +42,7 @@ SCHEMA_WHITELIST: dict[str, set[str]] = {
         "created_at",
     },
     "assignments": {"id", "inquiry_id", "assignee_id", "assigned_at", "method"},
-    "staff": {"id", "name", "email", "role"},
+    "staff": {"id", "name", "email", "role", "is_active"},
     "leads": {
         "id",
         "name",
@@ -39,6 +50,11 @@ SCHEMA_WHITELIST: dict[str, set[str]] = {
         "license_date",
         "years_in_business",
         "business_type",
+        "assignee_id",
+        "contact_name",
+        "contact_phone",
+        "contact_email",
+        "next_action_at",
         "lead_score",
         "pipeline_stage",
         "created_at",
@@ -53,7 +69,40 @@ SCHEMA_WHITELIST: dict[str, set[str]] = {
         "send_mode",
         "sent_at",
     },
-    "products": {"id", "name", "brand", "category", "price", "product_url", "updated_at"},
+    "products": {
+        "id",
+        "name",
+        "brand",
+        "category",
+        "price",
+        "price_type",
+        "price_source_url",
+        "price_verified_at",
+        "usage_context",
+        "is_verified",
+        "product_url",
+        "updated_at",
+    },
+    "sales_regions": {
+        "id",
+        "region_name",
+        "match_keyword",
+        "manager_id",
+        "is_active",
+        "created_at",
+    },
+    "partners": {
+        "id",
+        "name",
+        "address",
+        "phone",
+        "region",
+        "partner_type",
+        "verification_source",
+        "verified_at",
+        "is_active",
+        "created_at",
+    },
     "opportunities": {
         "id",
         "account_id",
@@ -87,6 +136,14 @@ SCHEMA_WHITELIST: dict[str, set[str]] = {
         "stage",
         "changed_by",
         "changed_at",
+    },
+    "opportunity_items": {
+        "id",
+        "opportunity_id",
+        "product_id",
+        "product_name",
+        "quantity",
+        "unit_price",
     },
 }
 ALLOWED_FUNCTIONS = {
@@ -129,8 +186,11 @@ def validate_sql(sql: str) -> str:
     forbidden = (exp.Delete, exp.Update, exp.Insert, exp.Drop, exp.Alter, exp.Create, exp.Command)
     if any(tree.find(kind) for kind in forbidden):
         raise UnsafeQueryError("데이터를 변경하는 SQL은 허용되지 않습니다.")
-    if tree.find(exp.Star):
-        raise UnsafeQueryError("와일드카드 조회는 허용되지 않습니다.")
+    if any(
+        not isinstance(star.parent, exp.Count) or star.arg_key != "this"
+        for star in tree.find_all(exp.Star)
+    ):
+        raise UnsafeQueryError("조회 항목의 와일드카드는 허용되지 않습니다.")
     for function in tree.find_all(exp.Func):
         name = function.name if isinstance(function, exp.Anonymous) else function.sql_name()
         if name.upper() not in ALLOWED_FUNCTIONS:

@@ -17,6 +17,7 @@ from app.models import (
     Assignment,
     AuditLog,
     Inquiry,
+    Interaction,
     Lead,
     Opportunity,
     OpportunityStageHistory,
@@ -71,7 +72,7 @@ async def crm_base(session: AsyncSession) -> tuple[Staff, Staff, Account]:
         name="관리자",
         email=f"manager-{uuid.uuid4()}@example.test",
         hashed_password="not-used",
-        role="manager",
+        role="owner",
     )
     rep = Staff(
         id=uuid.uuid4(),
@@ -349,6 +350,84 @@ async def test_customer_overview_and_opportunity_filters(session: AsyncSession) 
 
 
 @pytest.mark.asyncio
+async def test_customer_overview_scopes_shared_account_records_to_rep(
+    session: AsyncSession,
+) -> None:
+    manager, rep, account = await crm_base(session)
+    other_rep = Staff(
+        id=uuid.uuid4(),
+        name="공동 담당자",
+        email=f"shared-{uuid.uuid4()}@example.test",
+        hashed_password="not-used",
+        role="rep",
+    )
+    own_inquiry = Inquiry(account_id=account.id, channel="web", content="내 문의")
+    other_inquiry = Inquiry(account_id=account.id, channel="web", content="타인 문의")
+    session.add_all([other_rep, own_inquiry, other_inquiry])
+    await session.flush()
+    session.add_all(
+        [
+            Assignment(inquiry_id=own_inquiry.id, assignee_id=rep.id, method="manual"),
+            Assignment(inquiry_id=other_inquiry.id, assignee_id=other_rep.id, method="manual"),
+            Interaction(account_id=account.id, staff_id=rep.id, type="note", content="내 활동"),
+            Interaction(
+                account_id=account.id, staff_id=other_rep.id, type="note", content="타인 활동"
+            ),
+            Opportunity(
+                account_id=account.id,
+                assignee_id=rep.id,
+                title="내 영업기회",
+                stage="qualify",
+                probability=10,
+            ),
+            Opportunity(
+                account_id=account.id,
+                assignee_id=other_rep.id,
+                title="타인 영업기회",
+                stage="qualify",
+                probability=10,
+            ),
+            Task(
+                account_id=account.id,
+                assignee_id=rep.id,
+                title="내 할 일",
+                due_at=datetime.now(timezone.utc),
+            ),
+            Task(
+                account_id=account.id,
+                assignee_id=other_rep.id,
+                title="타인 할 일",
+                due_at=datetime.now(timezone.utc),
+            ),
+        ]
+    )
+    await session.commit()
+    account_id, rep_id, manager_id = account.id, rep.id, manager.id
+    session.expire_all()
+    rep = await session.get_one(Staff, rep_id)
+    manager = await session.get_one(Staff, manager_id)
+
+    rep_overview = await account_overview(account_id, session, rep)
+    manager_overview = await account_overview(account_id, session, manager)
+
+    assert [item["content"] for item in rep_overview["inquiries"]] == ["내 문의"]
+    assert [item["content"] for item in rep_overview["activities"]] == ["내 활동"]
+    assert [item["title"] for item in rep_overview["opportunities"]] == ["내 영업기회"]
+    assert [item["title"] for item in rep_overview["tasks"]] == ["내 할 일"]
+    assert {item["text"] for item in rep_overview["timeline"]} == {
+        "내 문의",
+        "내 활동",
+        "내 영업기회",
+        "내 할 일",
+    }
+    assert len(manager_overview["inquiries"]) == 2
+    assert len(manager_overview["activities"]) == 2
+    assert len(manager_overview["opportunities"]) == 2
+    assert len(manager_overview["tasks"]) == 2
+    assert len(manager_overview["timeline"]) == 8
+
+
+@pytest.mark.asyncio
 async def test_lost_stage_requires_reason_and_rep_cannot_edit_foreign_deal(
     session: AsyncSession,
 ) -> None:
@@ -380,30 +459,51 @@ async def test_lost_stage_requires_reason_and_rep_cannot_edit_foreign_deal(
     await session.commit()
 
     with pytest.raises(HTTPException) as forbidden:
-        await update_opportunity(opportunity.id, OpportunityUpdate(title="침범"), session, rep)
+        await update_opportunity(
+            opportunity.id,
+            OpportunityUpdate(expected_updated_at=opportunity.updated_at, title="침범"),
+            session,
+            rep,
+        )
     assert forbidden.value.status_code == 403
     with pytest.raises(HTTPException) as takeover:
         await update_opportunity(
             opportunity.id,
-            OpportunityUpdate(assignee_id=rep.id, title="가로채기"),
+            OpportunityUpdate(
+                expected_updated_at=opportunity.updated_at,
+                assignee_id=rep.id,
+                title="가로채기",
+            ),
             session,
             rep,
         )
     assert takeover.value.status_code == 403
     with pytest.raises(HTTPException) as missing_reason:
-        await update_opportunity(opportunity.id, OpportunityUpdate(stage="lost"), session, manager)
+        await update_opportunity(
+            opportunity.id,
+            OpportunityUpdate(expected_updated_at=opportunity.updated_at, stage="lost"),
+            session,
+            manager,
+        )
     assert missing_reason.value.status_code == 422
 
     lost = await update_opportunity(
         opportunity.id,
-        OpportunityUpdate(stage="lost", loss_reason="예산 취소"),
+        OpportunityUpdate(
+            expected_updated_at=opportunity.updated_at,
+            stage="lost",
+            loss_reason="예산 취소",
+        ),
         session,
         manager,
     )
     assert lost.stage == "lost"
     with pytest.raises(HTTPException) as terminal:
         await update_opportunity(
-            opportunity.id, OpportunityUpdate(stage="develop"), session, manager
+            opportunity.id,
+            OpportunityUpdate(expected_updated_at=lost.updated_at, stage="develop"),
+            session,
+            manager,
         )
     assert terminal.value.status_code == 409
 
@@ -411,9 +511,18 @@ async def test_lost_stage_requires_reason_and_rep_cannot_edit_foreign_deal(
 @pytest.mark.parametrize(
     ("path", "body"),
     [
-        ("/api/crm/opportunities/1", {"title": None}),
-        ("/api/crm/opportunities/1", {"stage": None}),
-        ("/api/crm/opportunities/1", {"probability": None}),
+        (
+            "/api/crm/opportunities/1",
+            {"expected_updated_at": "2026-01-01T00:00:00Z", "title": None},
+        ),
+        (
+            "/api/crm/opportunities/1",
+            {"expected_updated_at": "2026-01-01T00:00:00Z", "stage": None},
+        ),
+        (
+            "/api/crm/opportunities/1",
+            {"expected_updated_at": "2026-01-01T00:00:00Z", "probability": None},
+        ),
         ("/api/crm/tasks/1", {"title": None}),
         ("/api/crm/tasks/1", {"due_at": None}),
         ("/api/crm/tasks/1", {"status": None}),
@@ -440,6 +549,38 @@ def test_patch_rejects_explicit_null(path: str, body: dict[str, object]) -> None
     app.dependency_overrides[get_session] = override_session
     with TestClient(app) as client:
         response = client.patch(path, json=body)
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("PATCH", "/api/crm/opportunities/1", {"title": "토큰 없음"}),
+        ("PUT", "/api/crm/opportunities/1/items", {"items": []}),
+    ],
+)
+def test_opportunity_mutations_require_concurrency_token(
+    method: str, path: str, body: dict[str, object]
+) -> None:
+    app = FastAPI()
+    app.include_router(crm_router)
+
+    async def override_staff() -> Staff:
+        return Staff(
+            id=uuid.uuid4(),
+            name="관리자",
+            email="token-check@example.test",
+            hashed_password="not-used",
+            role="manager",
+        )
+
+    async def override_session() -> AsyncIterator[None]:
+        yield None
+
+    app.dependency_overrides[get_current_staff] = override_staff
+    app.dependency_overrides[get_session] = override_session
+    with TestClient(app) as client:
+        response = client.request(method, path, json=body)
     assert response.status_code == 422
 
 
@@ -545,7 +686,7 @@ def test_opportunity_amount_rejects_numeric_overflow() -> None:
             amount=excessive,
         )
     with pytest.raises(ValueError):
-        OpportunityUpdate(amount=excessive)
+        OpportunityUpdate(expected_updated_at=datetime.now(timezone.utc), amount=excessive)
     with pytest.raises(ValueError):
         InquiryConversionRequest(title="한도 초과", amount=excessive)
     with pytest.raises(ValueError):
@@ -556,7 +697,7 @@ def test_opportunity_amount_rejects_numeric_overflow() -> None:
             amount=excessive,
         )
     with pytest.raises(ValueError):
-        OpportunityUpdate(amount="1.001")
+        OpportunityUpdate(expected_updated_at=datetime.now(timezone.utc), amount="1.001")
 
 
 @pytest.mark.asyncio
@@ -695,7 +836,7 @@ async def test_account_unique_race_returns_409() -> None:
         name="관리자",
         email="race@example.test",
         hashed_password="not-used",
-        role="manager",
+        role="owner",
     )
     payload = AccountCreate(name="동시 고객", phone="01012345678")
 

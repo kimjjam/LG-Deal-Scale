@@ -66,10 +66,11 @@ export default function InternalApp() {
   }
 
   if (!session) return <Login onLogin={login} />;
-  const visibleItems = session.role === "owner"
-    ? NAV_ITEMS
-    : NAV_ITEMS.filter((item) => item.key !== "staff" && item.key !== "admin");
-  const currentView = (view === "staff" || view === "admin") && session.role !== "owner" ? "inbox" : view;
+  const visibleItems = NAV_ITEMS.filter((item) =>
+    (session.role === "owner" || !["staff", "admin"].includes(item.key))
+    && (session.role === "owner" || item.key !== "search")
+  );
+  const currentView = visibleItems.some((item) => item.key === view) ? view : "inbox";
   const activeItem = visibleItems.find((item) => item.key === currentView) ?? visibleItems[0];
 
   return (

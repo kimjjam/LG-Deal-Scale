@@ -94,7 +94,13 @@ def accessible_account_ids(staff_id: uuid.UUID):
 
 
 async def require_account_access(session: AsyncSession, account_id: int, staff: Staff) -> None:
-    if staff.role in {"owner", "manager"}:
+    if staff.role == "owner":
+        return
+    if staff.role == "manager":
+        from app.services import manager_account_ids
+
+        if account_id not in await manager_account_ids(session, staff):
+            raise HTTPException(status_code=403, detail="내 담당 지역의 고객만 조회하거나 변경할 수 있습니다.")
         return
     account_ids = accessible_account_ids(staff.id).subquery()
     allowed = await session.scalar(
@@ -102,6 +108,30 @@ async def require_account_access(session: AsyncSession, account_id: int, staff: 
     )
     if allowed is None:
         raise HTTPException(status_code=403, detail="담당 고객만 조회하거나 변경할 수 있습니다.")
+
+
+async def account_scope_ids(session: AsyncSession, staff: Staff) -> set[int] | None:
+    if staff.role == "owner":
+        return None
+    if staff.role == "manager":
+        from app.services import manager_account_ids
+
+        return await manager_account_ids(session, staff)
+    return set((await session.scalars(accessible_account_ids(staff.id))).all())
+
+
+async def require_account_location_access(
+    session: AsyncSession, attributes: dict[str, object], staff: Staff
+) -> None:
+    if staff.role != "manager":
+        return
+    from app.services import regional_manager_ids
+
+    location = attributes.get("location")
+    if not isinstance(location, str) or staff.id not in await regional_manager_ids(
+        session, location
+    ):
+        raise HTTPException(status_code=403, detail="내 담당 지역의 고객만 등록하거나 변경할 수 있습니다.")
 
 
 CurrentStaff = Annotated[Staff, Depends(get_current_staff)]

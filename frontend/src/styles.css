@@ -457,11 +457,16 @@ textarea::placeholder { color: #9aa2a9; }
 .public-intro li strong::before { content: counter(intro-step) ". "; color: var(--brand); }
 .public-intro li span { color: var(--muted); font-size: 11px; line-height: 1.6; }
 .public-intro-notice { padding: 15px 17px; border-radius: var(--radius-md); background: var(--panel-soft); }
-.public-intro-notice p + p { margin-top: 8px; }
-.public-intro-notice strong { color: var(--ink); }
+.public-intro-notice h3 { margin: 0 0 10px; font-size: 14px; }
+.public-intro-notice dl { display: grid; gap: 8px; margin: 0; }
+.public-intro-notice dl > div { display: grid; grid-template-columns: 72px 1fr; gap: 10px; }
+.public-intro-notice dt { color: var(--ink); font-size: 11px; font-weight: 750; }
+.public-intro-notice dd { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
 .public-start-button { width: 100%; min-height: 50px; }
 .chat-header { min-height: 72px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 15px 20px; background: var(--brand); color: #fff; }
 .public-brand { display: flex; align-items: center; gap: 11px; }
+.public-brand small { display: block; margin-top: 2px; color: #f2c8d5; font-size: 8px; font-weight: 650; }
+.service-disclaimer { padding: 9px 11px; background: #f2f4f5; color: var(--subtle) !important; font-size: 9px !important; }
 .header-kicker { display: block; color: #f1bdce; font-size: 8px; font-weight: 800; letter-spacing: 0.16em; }
 .chat-header h1 { margin: 3px 0 0; color: #fff; font-size: 19px; letter-spacing: -0.025em; }
 .chat-status { display: inline-flex; align-items: center; gap: 7px; padding: 6px 9px; border-radius: 999px; background: rgba(255, 255, 255, 0.14); color: #fff; font-size: 10px; font-weight: 750; }
@@ -529,7 +534,10 @@ textarea::placeholder { color: #9aa2a9; }
 .product-card > div span { color: var(--brand); font-size: 8px; font-weight: 800; }
 .product-card > div strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .product-price { flex: 0 0 auto; display: grid; gap: 2px; font-size: 11px; }
+.product-price > span { color: var(--ink); font-size: 9px; font-weight: 700; }
 .product-price small { color: var(--muted); font-size: 8px; font-weight: 500; }
+.price-disclaimer,
+.regional-team-status { margin: 9px 0 0; color: var(--muted); font-size: 9px; line-height: 1.6; }
 .purchase-comparison-wrap { overflow-x: auto; }
 .purchase-comparison { width: 100%; min-width: 680px; border-collapse: collapse; font-size: 10px; }
 .purchase-comparison th, .purchase-comparison td { padding: 9px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
@@ -627,6 +635,10 @@ textarea::placeholder { color: #9aa2a9; }
   .mode-notice { display: grid; gap: 2px; }
   .draft-workflow .section-heading { align-items: flex-start; flex-direction: column; }
   .draft-workflow .secondary-button { width: 100%; }
+  .opportunity-product-item { align-items: stretch; flex-direction: column; }
+  .opportunity-product-item label,
+  .opportunity-product-item input,
+  .opportunity-product-item select { width: 100%; }
 
   .chat-header { min-height: 66px; padding: 12px 14px; }
   .public-intro { gap: 18px; padding: 28px 20px; }

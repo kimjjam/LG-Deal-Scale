@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Lead, Product, Staff
-from app.product_pricing import PRICE_FRESHNESS_DAYS, trusted_business_price
+from app.product_pricing import PRICE_FRESHNESS_DAYS, trusted_business_price, trusted_public_price
 from app.routes.outbound import generate_draft
 from app.schemas import seoul_business_date
 
@@ -46,6 +46,23 @@ def test_numeric_business_price_uses_kst_date_and_inclusive_30_day_window(
         None,
         None,
     )
+
+
+def test_public_price_exposes_only_fresh_verified_retail_reference() -> None:
+    today = date(2026, 8, 21)
+    retail = product("공식몰", 987654, "retail_reference")
+    retail.price_verified_at = today
+    assert trusted_public_price(retail, today) == (
+        987654.0,
+        "공식몰 참고가 987,654원",
+        "https://example.test/공식몰",
+        today,
+    )
+    retail.price_verified_at = today - timedelta(days=PRICE_FRESHNESS_DAYS + 1)
+    assert trusted_public_price(retail, today)[0] is None
+    retail.price_verified_at = today
+    retail.is_verified = False
+    assert trusted_public_price(retail, today)[0] is None
 
 
 @pytest.mark.parametrize(
@@ -108,6 +125,9 @@ async def test_outbound_prompt_excludes_unverified_identity_and_retail_number(
     )
     await generate_draft(lead.id, session, manager)
 
+    assert "발신 담당자: 매니저" in prompts[0]
+    assert "공급 계약을 제안한다는 목적" in prompts[0]
+    assert "연락 요청은 쓰지 마세요" in prompts[0]
     assert "검증도매" in prompts[0] and "432,100" in prompts[0]
     assert "검증소매" in prompts[0] and "987654" not in prompts[0]
     assert "미검증" not in prompts[0] and "765432" not in prompts[0]

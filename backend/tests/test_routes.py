@@ -48,6 +48,29 @@ class IntakeLLM:
         )
 
 
+class MultiTurnIntakeLLM:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def structured(self, _prompt: str, result_type: type) -> object:
+        self.calls += 1
+        if self.calls == 1:
+            fields = IntakeFields(
+                business_name="다온 호텔",
+                phone="010-1234-5678",
+                inquiry="객실용 냉장고 견적",
+                business_type="숙박업",
+                room_count=12,
+                product="냉장고",
+                location="서울특별시 중구",
+                purchase_stage="견적 요청",
+                purchase_timing="1개월 이내",
+            )
+        else:
+            fields = IntakeFields(quantity=6)
+        return result_type(message="확인했습니다.", fields=fields)
+
+
 class SearchLLM:
     def __init__(self, response: str = "", fail: bool = False) -> None:
         self.response = response
@@ -81,13 +104,37 @@ def test_nearby_store_raw_parser_preserves_empty_result_and_ignores_legacy_data(
 
 
 @pytest.mark.asyncio
+async def test_public_chat_accumulates_sparse_llm_fields_across_turns(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    llm = MultiTurnIntakeLLM()
+    monkeypatch.setattr(public, "get_llm_client", lambda: llm)
+    request = Request({"type": "http", "client": ("127.0.0.1", 1)})
+    first_messages = [ChatMessage(role="user", content="냉장고 견적이 필요해요")]
+    first = await public.chat.__wrapped__(
+        request, ChatTurnRequest(messages=first_messages), session
+    )
+    second = await public.chat.__wrapped__(
+        request,
+        ChatTurnRequest(
+            messages=[*first_messages, ChatMessage(role="user", content="6대요")],
+            fields=first.fields,
+        ),
+        session,
+    )
+
+    assert second.ready_for_analysis is True
+    assert second.fields.model_dump() == {**first.fields.model_dump(), "quantity": 6}
+
+
+@pytest.mark.asyncio
 async def test_inbox_includes_account_and_latest_assignee_names(session: AsyncSession) -> None:
     manager = Staff(
         id=uuid.uuid4(),
         name="관리자",
         email="manager@example.test",
         hashed_password="not-used",
-        role="manager",
+        role="owner",
     )
     old_rep = Staff(
         id=uuid.uuid4(),
@@ -163,7 +210,7 @@ async def test_inbox_returns_empty_nearby_stores_for_staff_inquiry(session: Asyn
         name="관리자",
         email="nearby-manager@example.test",
         hashed_password="not-used",
-        role="manager",
+        role="owner",
     )
     account = Account(name="가상호텔", phone="01099998888", attributes={})
     session.add_all([manager, account])
@@ -189,16 +236,24 @@ async def test_outbound_draft_payload_and_dashboard_mode(
 ) -> None:
     staff = Staff(
         id=uuid.uuid4(),
-        name="담당자",
-        email="rep@example.test",
+        name="관리자",
+        email="manager@example.test",
         hashed_password="not-used",
         role="manager",
+    )
+    assigned_rep = Staff(
+        id=uuid.uuid4(),
+        name="김담당",
+        email="assigned-rep@example.test",
+        hashed_password="not-used",
+        role="rep",
     )
     lead = Lead(
         name="가상펜션",
         address="서울",
         years_in_business=8,
         business_type="펜션",
+        assignee_id=assigned_rep.id,
         raw_data={},
         lead_score=80,
         lead_score_reasoning={"years_in_business": "교체 수요 예상"},
@@ -210,7 +265,9 @@ async def test_outbound_draft_payload_and_dashboard_mode(
         price=500_000,
         product_url="https://example.test/product",
     )
-    session.add_all([staff, lead, product])
+    session.add_all([staff, assigned_rep])
+    await session.flush()
+    session.add_all([lead, product])
     await session.flush()
     first = OutboundDraft(
         lead_id=lead.id,
@@ -234,8 +291,13 @@ async def test_outbound_draft_payload_and_dashboard_mode(
     drafts = await outbound.list_drafts(lead.id, session, staff)
     summary = await outbound.dashboard(session, staff)
 
-    assert created["subject"] == "맞춤 제안"
-    assert created["body"] == "숙박업 운영 환경에 맞춘 제안입니다."
+    assert created["subject"] == "[공급 계약 제안] 맞춤 제안"
+    assert created["body"] == (
+        "안녕하세요. 다온비즈 담당자 김담당입니다.\n\n"
+        "숙박업 운영 환경에 맞춘 제안입니다.\n\n"
+        "구체적인 공급 수량과 일정, 계약 조건은 검토 후 협의를 통해 정리하겠습니다.\n\n"
+        "감사합니다.\n김담당 드림"
+    )
     assert created["reviewed"] is False
     assert [draft["sequence_step"] for draft in drafts] == [2, 1]
     assert drafts[1]["reviewed"] is True
@@ -262,6 +324,9 @@ async def test_public_flow_never_matches_soft_deleted_account(
         phone="010-2222-3333",
         inquiry="냉장고 문의",
         business_type="제조업",
+        product="냉장고",
+        quantity=1,
+        location="서울",
         purchase_stage="견적 요청",
         purchase_timing="1개월 이내",
     )
@@ -321,7 +386,7 @@ async def test_nl2sql_failures_are_audited(
         name="검색 담당자",
         email=f"{category}@example.test",
         hashed_password="not-used",
-        role="manager",
+        role="owner",
     )
     session.add(staff)
     await session.commit()
@@ -332,7 +397,7 @@ async def test_nl2sql_failures_are_audited(
     )
     monkeypatch.setattr(search, "get_llm_client", lambda: llm)
 
-    with pytest.raises(HTTPException):
+    with pytest.raises(HTTPException) as raised:
         await search.natural_language_search(
             SearchRequest(question="고객사를 찾아줘"), session, staff
         )
@@ -343,3 +408,6 @@ async def test_nl2sql_failures_are_audited(
     assert log.error_category == category
     assert "secret" not in (log.error_message or "")
     assert log.row_count == 0
+    if category == "validation_error":
+        assert raised.value.detail == "안전하지 않은 SQL이 거부되었습니다."
+        assert log.error_message != raised.value.detail

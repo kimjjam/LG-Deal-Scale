@@ -30,8 +30,18 @@ from app.schemas import (
     PartnerLinkRequest,
 )
 from app.scoring import INTENT_POINTS, calculate_total
-from app.security import CurrentStaff, ManagerStaff
-from app.services import claim_inquiry, create_inquiry, manually_assign, score_inquiry
+from app.security import CurrentStaff, ManagerStaff, require_account_access
+from app.services import (
+    claim_inquiry,
+    create_inquiry,
+    manager_account_ids,
+    manager_region_keywords,
+    manually_assign,
+    partner_matches_region_keywords,
+    regional_manager_id,
+    require_inquiry_access,
+    score_inquiry,
+)
 
 router = APIRouter(prefix="/api/inquiries", tags=["inquiries"])
 Session = Annotated[AsyncSession, Depends(get_session)]
@@ -66,27 +76,33 @@ def _nearby_store_search_from_raw(raw: object | None) -> dict[str, object] | Non
     return None
 
 
-async def _require_inquiry_access(session: AsyncSession, inquiry: Inquiry, staff: Staff) -> None:
-    if staff.role in ("owner", "manager"):
-        return
-    assignee_id = await session.scalar(
-        select(Assignment.assignee_id)
-        .where(Assignment.inquiry_id == inquiry.id)
-        .order_by(Assignment.assigned_at.desc(), Assignment.id.desc())
-        .limit(1)
-    )
-    if assignee_id != staff.id:
-        raise HTTPException(status_code=403, detail="배정된 담당자만 변경할 수 있습니다.")
-
-
 @router.post("", response_model=InquiryResponse)
-async def create(payload: InquiryCreate, session: Session, _staff: CurrentStaff) -> Inquiry:
+async def create(payload: InquiryCreate, session: Session, staff: CurrentStaff) -> Inquiry:
+    account = await session.scalar(
+        select(Account).where(Account.id == payload.account_id, Account.deleted_at.is_(None))
+    )
+    if not account:
+        raise HTTPException(status_code=404, detail="활성 고객사를 찾을 수 없습니다.")
+    if staff.role != "owner":
+        await require_account_access(session, payload.account_id, staff)
+    location = account.attributes.get("location") if isinstance(account.attributes, dict) else None
+    routing_manager_id = (
+        staff.id
+        if staff.role == "manager"
+        else await regional_manager_id(session, location if isinstance(location, str) else None)
+    )
     try:
         llm = get_llm_client()
     except RuntimeError:
         llm = None
     inquiry, _ = await create_inquiry(
-        session, payload.account_id, payload.channel, payload.content, None, llm
+        session,
+        payload.account_id,
+        payload.channel,
+        payload.content,
+        None,
+        llm,
+        routing_manager_id=routing_manager_id,
     )
     return inquiry
 
@@ -105,11 +121,22 @@ async def inbox(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[dict[str, object]]:
-    selected_scope = scope or ("all" if staff.role in ("owner", "manager") else "unassigned")
+    region_keywords = await manager_region_keywords(session, staff)
+    region_account_ids = (
+        await manager_account_ids(session, staff) if staff.role == "manager" else set()
+    )
+    if scope:
+        selected_scope = scope
+    elif staff.role == "manager":
+        selected_scope = "my_region"
+    else:
+        selected_scope = "all" if staff.role == "owner" else "unassigned"
     if selected_scope == "my_region" and staff.role != "manager":
         raise HTTPException(status_code=403, detail="지역 문의 범위는 매니저만 볼 수 있습니다.")
     if staff.role == "rep" and assignee_id not in {None, staff.id}:
         raise HTTPException(status_code=403, detail="다른 담당자의 문의는 조회할 수 없습니다.")
+    if staff.role == "manager" and not region_keywords:
+        return []
     current_assignee = (
         select(Assignment.assignee_id)
         .where(Assignment.inquiry_id == Inquiry.id)
@@ -148,12 +175,14 @@ async def inbox(
         .outerjoin(Partner, Partner.id == Inquiry.partner_id)
         .where(Account.deleted_at.is_(None))
     )
+    if staff.role == "manager":
+        statement = statement.where(Account.id.in_(region_account_ids))
     if selected_scope == "mine":
         statement = statement.where(current_assignee == staff.id)
     elif selected_scope == "unassigned":
         statement = statement.where(current_assignee.is_(None), Inquiry.status == "open")
     elif selected_scope == "my_region":
-        statement = statement.where(Inquiry.routing_manager_id == staff.id)
+        statement = statement.where(Account.id.in_(region_account_ids))
     if q:
         statement = statement.where(
             or_(Inquiry.content.ilike(f"%{q}%"), Account.name.ilike(f"%{q}%"))
@@ -218,7 +247,7 @@ async def retry_score(inquiry_id: int, session: Session, staff: CurrentStaff) ->
     inquiry = await session.get(Inquiry, inquiry_id)
     if not inquiry:
         raise HTTPException(status_code=404, detail="문의를 찾을 수 없습니다.")
-    await _require_inquiry_access(session, inquiry, staff)
+    await require_inquiry_access(session, inquiry, staff)
     try:
         score = await score_inquiry(session, inquiry_id, get_llm_client())
     except ValueError as error:
@@ -238,6 +267,7 @@ async def reassign(
     inquiry = await session.get(Inquiry, inquiry_id)
     if not inquiry:
         raise HTTPException(status_code=404, detail="문의를 찾을 수 없습니다.")
+    await require_inquiry_access(session, inquiry, manager)
     try:
         assignment = await manually_assign(session, inquiry, payload.assignee_id)
     except ValueError as error:
@@ -286,9 +316,13 @@ async def link_partner(
     inquiry = await session.get(Inquiry, inquiry_id)
     if not inquiry:
         raise HTTPException(status_code=404, detail="문의를 찾을 수 없습니다.")
+    await require_inquiry_access(session, inquiry, manager)
     partner = await session.get(Partner, payload.partner_id) if payload.partner_id else None
     if payload.partner_id and (not partner or not partner.is_active):
         raise HTTPException(status_code=404, detail="활성 검증 파트너를 찾을 수 없습니다.")
+    region_keywords = await manager_region_keywords(session, manager)
+    if partner and region_keywords and not partner_matches_region_keywords(partner, region_keywords):
+        raise HTTPException(status_code=403, detail="내 담당 지역의 파트너만 연결할 수 있습니다.")
     inquiry.partner_id = partner.id if partner else None
     record_audit(
         session,
@@ -314,7 +348,7 @@ async def update_status(
     inquiry = await session.get(Inquiry, inquiry_id)
     if not inquiry:
         raise HTTPException(status_code=404, detail="문의를 찾을 수 없습니다.")
-    await _require_inquiry_access(session, inquiry, staff)
+    await require_inquiry_access(session, inquiry, staff)
     if inquiry.status != payload.status:
         previous = inquiry.status
         inquiry.status = payload.status
@@ -341,7 +375,7 @@ async def correct_intent(
     inquiry = await session.get(Inquiry, inquiry_id)
     if not inquiry:
         raise HTTPException(status_code=404, detail="문의를 찾을 수 없습니다.")
-    await _require_inquiry_access(session, inquiry, staff)
+    await require_inquiry_access(session, inquiry, staff)
     score = await session.scalar(select(Score).where(Score.inquiry_id == inquiry_id))
     if not score:
         raise HTTPException(status_code=404, detail="수정할 점수를 찾을 수 없습니다.")
@@ -382,7 +416,7 @@ async def convert_to_opportunity(
     inquiry = await session.get(Inquiry, inquiry_id)
     if not inquiry:
         raise HTTPException(status_code=404, detail="문의를 찾을 수 없습니다.")
-    await _require_inquiry_access(session, inquiry, staff)
+    await require_inquiry_access(session, inquiry, staff)
     account = await session.get(Account, inquiry.account_id)
     if not account or account.deleted_at is not None:
         raise HTTPException(status_code=404, detail="활성 고객사를 찾을 수 없습니다.")

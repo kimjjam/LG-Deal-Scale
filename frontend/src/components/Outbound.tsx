@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { KeyboardEvent, useEffect, useRef, useState } from "react";
 
-import { api } from "../api";
-import type { Lead, OutboundDashboard, OutboundDraft, Session } from "../types";
+import { api, sessionStaffId } from "../api";
+import type { Lead, OutboundDashboard, OutboundDraft, Session, StaffMember } from "../types";
 import DetailDialog from "./DetailDialog";
 import CsvControls from "./CsvControls";
 import { EmptyState, LoadingState } from "./States";
@@ -78,7 +78,15 @@ export default function Outbound({ session }: { session: Session }) {
   const [syncPage, setSyncPage] = useState(1);
   const [syncBusy, setSyncBusy] = useState(false);
   const [syncMessage, setSyncMessage] = useState("");
+  const [staff, setStaff] = useState<StaffMember[]>([]);
+  const [workQueue, setWorkQueue] = useState(false);
+  const [contactName, setContactName] = useState("");
+  const [contactPhone, setContactPhone] = useState("");
+  const [contactEmail, setContactEmail] = useState("");
+  const [nextActionAt, setNextActionAt] = useState("");
+  const leadSelectionRequest = useRef(0);
   const canManage = session.role !== "rep";
+  const currentStaffId = sessionStaffId(session);
   const selectedId = selected?.id;
 
   useEffect(() => {
@@ -86,14 +94,17 @@ export default function Outbound({ session }: { session: Session }) {
     const query = new URLSearchParams({ limit: String(PAGE_SIZE + 1), offset: String(offset) });
     if (search) query.set("q", search);
     if (stage) query.set("status", stage);
+    if (workQueue) query.set("work_queue", "true");
     Promise.all([
       api<Lead[]>(`/outbound/leads?${query}`, {}, session),
-      api<OutboundDashboard>("/outbound/dashboard", {}, session)
-    ]).then(([leadRows, metrics]) => {
+      api<OutboundDashboard>("/outbound/dashboard", {}, session),
+      canManage ? api<StaffMember[]>("/staff?role=rep", {}, session) : Promise.resolve([])
+    ]).then(([leadRows, metrics, staffRows]) => {
       if (active) {
         setHasNext(leadRows.length > PAGE_SIZE);
         setLeads(leadRows.slice(0, PAGE_SIZE));
         setDashboard(metrics);
+        setStaff(staffRows.filter((member) => member.is_active));
       }
     }).catch((requestError: unknown) => {
       if (active) setError(requestError instanceof Error ? requestError.message : "데이터를 불러오지 못했습니다.");
@@ -101,7 +112,7 @@ export default function Outbound({ session }: { session: Session }) {
       if (active) setLoading(false);
     });
     return () => { active = false; };
-  }, [session, search, stage, offset, refreshKey]);
+  }, [session, search, stage, workQueue, offset, refreshKey, canManage]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -123,27 +134,57 @@ export default function Outbound({ session }: { session: Session }) {
   }, [selectedId, session]);
 
   function openLead(lead: Lead) {
+    leadSelectionRequest.current += 1;
+    setBusyAction("");
     setDrafts([]);
     setActiveDraftId(null);
     setConfirmed(false);
     setDraftLoading(true);
     setError("");
+    setContactName(lead.contact_name ?? "");
+    setContactPhone(lead.contact_phone ?? "");
+    setContactEmail(lead.contact_email ?? "");
+    setNextActionAt(lead.next_action_at ? toLocalInput(lead.next_action_at) : "");
     setSelected(lead);
   }
 
   function closeLead() {
+    leadSelectionRequest.current += 1;
+    setBusyAction("");
     setSelected(null);
     setDrafts([]);
     setActiveDraftId(null);
   }
 
-  function updateLeadStage(leadId: number, pipelineStage: string) {
-    setLeads((rows) => rows.map((lead) => lead.id === leadId ? { ...lead, pipeline_stage: pipelineStage } : lead));
-    setSelected((lead) => lead?.id === leadId ? { ...lead, pipeline_stage: pipelineStage } : lead);
+  function updateLeadStage(leadId: number, pipelineStage: string, clearNextAction = false) {
+    const changes = clearNextAction ? { pipeline_stage: pipelineStage, next_action_at: null } : { pipeline_stage: pipelineStage };
+    setLeads((rows) => rows.map((lead) => lead.id === leadId ? { ...lead, ...changes } : lead));
+    setSelected((lead) => lead?.id === leadId ? { ...lead, ...changes } : lead);
   }
 
   async function refreshDashboard() {
-    setDashboard(await api<OutboundDashboard>("/outbound/dashboard", {}, session));
+    return api<OutboundDashboard>("/outbound/dashboard", {}, session);
+  }
+
+  async function updateLead(leadId: number, changes: Partial<Lead>) {
+    const request = leadSelectionRequest.current;
+    const selectionLeadId = selectedId;
+    setBusyAction("lead");
+    setError("");
+    try {
+      const response = await api<{ pipeline_stage: string }>(`/outbound/leads/${leadId}`, {
+        method: "PATCH",
+        body: JSON.stringify(changes)
+      }, session);
+      if (request !== leadSelectionRequest.current || selectionLeadId !== leadId) return;
+      const applied = { ...changes, pipeline_stage: response.pipeline_stage };
+      setLeads((rows) => rows.map((lead) => lead.id === leadId ? { ...lead, ...applied } : lead));
+      setSelected((lead) => lead?.id === leadId ? { ...lead, ...applied } : lead);
+    } catch (requestError) {
+      if (request === leadSelectionRequest.current && selectionLeadId === leadId) setError(requestError instanceof Error ? requestError.message : "리드 정보를 저장하지 못했습니다.");
+    } finally {
+      if (request === leadSelectionRequest.current && selectionLeadId === leadId) setBusyAction("");
+    }
   }
 
   async function syncPublicLeads() {
@@ -166,134 +207,189 @@ export default function Outbound({ session }: { session: Session }) {
   }
 
   async function enrichBuilding(leadId: number) {
+    const request = leadSelectionRequest.current;
+    const selectionLeadId = selectedId;
     setBusyAction("building");
     setError("");
     try {
       const result = await api<BuildingEnrichmentResponse>(`/outbound/leads/${leadId}/enrich-building`, { method: "POST" }, session);
+      if (request !== leadSelectionRequest.current || selectionLeadId !== leadId) return;
       const update = (lead: Lead) => lead.id === result.id ? { ...lead, lead_score: result.lead_score, reasoning: result.reasoning, evidence: result.evidence } : lead;
       setLeads((rows) => rows.map(update));
       setSelected((lead) => lead ? update(lead) : lead);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "건축물 정보를 보강하지 못했습니다.");
+      if (request === leadSelectionRequest.current && selectionLeadId === leadId) setError(requestError instanceof Error ? requestError.message : "건축물 정보를 보강하지 못했습니다.");
     } finally {
-      setBusyAction("");
+      if (request === leadSelectionRequest.current && selectionLeadId === leadId) setBusyAction("");
     }
   }
 
   async function generateDraft(leadId: number) {
+    const request = leadSelectionRequest.current;
+    const selectionLeadId = selectedId;
     setBusyAction("generate");
     setError("");
     try {
       const draft = await api<OutboundDraft>(`/outbound/leads/${leadId}/drafts`, { method: "POST" }, session);
+      if (request !== leadSelectionRequest.current || selectionLeadId !== leadId) return;
       setDrafts((rows) => [draft, ...rows.filter((row) => row.id !== draft.id)]);
       setActiveDraftId(draft.id);
       setEditSubject(draft.subject);
       setEditBody(draft.body);
       setConfirmed(false);
-      if (selected?.pipeline_stage === "discovered") updateLeadStage(leadId, "draft_generated");
-      await refreshDashboard();
+      setNextActionAt("");
+      updateLeadStage(leadId, "draft_generated", true);
+      const metrics = await refreshDashboard();
+      if (request === leadSelectionRequest.current && selectionLeadId === leadId) setDashboard(metrics);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "초안을 만들지 못했습니다.");
+      if (request === leadSelectionRequest.current && selectionLeadId === leadId) setError(requestError instanceof Error ? requestError.message : "초안을 만들지 못했습니다.");
     } finally {
-      setBusyAction("");
+      if (request === leadSelectionRequest.current && selectionLeadId === leadId) setBusyAction("");
     }
   }
 
   async function reviewDraft(draft: OutboundDraft) {
+    const request = leadSelectionRequest.current;
+    const leadId = draft.lead_id;
+    const selectionLeadId = selectedId;
     setBusyAction("review");
     setError("");
     try {
       await api(`/outbound/drafts/${draft.id}/review`, { method: "POST" }, session);
+      if (request !== leadSelectionRequest.current || selectionLeadId !== leadId) return;
       setDrafts((rows) => rows.map((row) => row.id === draft.id ? { ...row, reviewed: true } : row));
-      if (selected?.pipeline_stage === "draft_generated") updateLeadStage(draft.lead_id, "approved");
-      await refreshDashboard();
+      if (selected?.pipeline_stage === "draft_generated") updateLeadStage(leadId, "approved");
+      const metrics = await refreshDashboard();
+      if (request === leadSelectionRequest.current && selectionLeadId === leadId) setDashboard(metrics);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "검토 상태를 저장하지 못했습니다.");
+      if (request === leadSelectionRequest.current && selectionLeadId === leadId) setError(requestError instanceof Error ? requestError.message : "검토 상태를 저장하지 못했습니다.");
     } finally {
-      setBusyAction("");
+      if (request === leadSelectionRequest.current && selectionLeadId === leadId) setBusyAction("");
     }
   }
 
   async function sendDraft(draft: OutboundDraft) {
+    const request = leadSelectionRequest.current;
+    const leadId = draft.lead_id;
+    const selectionLeadId = selectedId;
     setBusyAction("send");
     setError("");
     try {
       const response = await api<SendResponse>(`/outbound/drafts/${draft.id}/send`, { method: "POST" }, session);
+      if (request !== leadSelectionRequest.current || selectionLeadId !== leadId) return;
       setDrafts((rows) => rows.map((row) => row.id === draft.id ? {
         ...row,
         sent_at: response.sent_at,
         send_mode: response.mode
       } : row));
-      await refreshDashboard();
+      const metrics = await refreshDashboard();
+      if (request === leadSelectionRequest.current && selectionLeadId === leadId) setDashboard(metrics);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "안전 발송을 완료하지 못했습니다.");
+      if (request === leadSelectionRequest.current && selectionLeadId === leadId) setError(requestError instanceof Error ? requestError.message : "안전 발송을 완료하지 못했습니다.");
     } finally {
-      setBusyAction("");
+      if (request === leadSelectionRequest.current && selectionLeadId === leadId) setBusyAction("");
     }
   }
 
   async function saveDraft(draft: OutboundDraft) {
+    const request = leadSelectionRequest.current;
+    const leadId = draft.lead_id;
+    const selectionLeadId = selectedId;
     setBusyAction("edit");
     setError("");
     try {
       const updated = await api<OutboundDraft>(`/outbound/drafts/${draft.id}`, { method: "PATCH", body: JSON.stringify({ subject: editSubject, body: editBody }) }, session);
+      if (request !== leadSelectionRequest.current || selectionLeadId !== leadId) return;
       setDrafts((rows) => rows.map((row) => row.id === updated.id ? updated : row));
       setConfirmed(false);
-      if (selected?.pipeline_stage === "approved") updateLeadStage(draft.lead_id, "draft_generated");
+      if (selected?.pipeline_stage === "approved") updateLeadStage(leadId, "draft_generated");
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "초안을 수정하지 못했습니다.");
+      if (request === leadSelectionRequest.current && selectionLeadId === leadId) setError(requestError instanceof Error ? requestError.message : "초안을 수정하지 못했습니다.");
     } finally {
-      setBusyAction("");
+      if (request === leadSelectionRequest.current && selectionLeadId === leadId) setBusyAction("");
     }
   }
 
   async function changeStage(leadId: number, pipelineStage: string) {
+    const request = leadSelectionRequest.current;
+    const selectionLeadId = selectedId;
     setBusyAction("stage");
     setError("");
     try {
       await api(`/outbound/leads/${leadId}/stage`, { method: "PUT", body: JSON.stringify({ pipeline_stage: pipelineStage }) }, session);
-      updateLeadStage(leadId, pipelineStage);
-      await refreshDashboard();
+      if (request !== leadSelectionRequest.current || selectionLeadId !== leadId) return;
+      const clearNextAction = pipelineStage !== "follow_up_due";
+      updateLeadStage(leadId, pipelineStage, clearNextAction);
+      if (clearNextAction) setNextActionAt("");
+      const metrics = await refreshDashboard();
+      if (request === leadSelectionRequest.current && selectionLeadId === leadId) setDashboard(metrics);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "단계를 변경하지 못했습니다.");
+      if (request === leadSelectionRequest.current && selectionLeadId === leadId) setError(requestError instanceof Error ? requestError.message : "단계를 변경하지 못했습니다.");
     } finally {
-      setBusyAction("");
+      if (request === leadSelectionRequest.current && selectionLeadId === leadId) setBusyAction("");
     }
   }
 
   async function recordContact(leadId: number) {
+    const request = leadSelectionRequest.current;
+    const selectionLeadId = selectedId;
     setBusyAction("contact");
     setError("");
     try {
       await api(`/outbound/leads/${leadId}/actual-contact`, { method: "POST", body: JSON.stringify({ channel: contactChannel, note: contactNote || null }) }, session);
-      updateLeadStage(leadId, "contacted");
+      if (request !== leadSelectionRequest.current || selectionLeadId !== leadId) return;
+      updateLeadStage(leadId, "contacted", true);
+      setNextActionAt("");
       setContactNote("");
-      await refreshDashboard();
+      const metrics = await refreshDashboard();
+      if (request === leadSelectionRequest.current && selectionLeadId === leadId) setDashboard(metrics);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "실제 접촉을 기록하지 못했습니다.");
+      if (request === leadSelectionRequest.current && selectionLeadId === leadId) setError(requestError instanceof Error ? requestError.message : "실제 접촉을 기록하지 못했습니다.");
     } finally {
-      setBusyAction("");
+      if (request === leadSelectionRequest.current && selectionLeadId === leadId) setBusyAction("");
     }
   }
 
   async function stopSequence(leadId: number) {
+    const request = leadSelectionRequest.current;
+    const selectionLeadId = selectedId;
     setBusyAction("stop");
     setError("");
     try {
       await api(`/outbound/leads/${leadId}/stop`, { method: "POST" }, session);
-      updateLeadStage(leadId, "dropped");
-      await refreshDashboard();
+      if (request !== leadSelectionRequest.current || selectionLeadId !== leadId) return;
+      updateLeadStage(leadId, "dropped", true);
+      setNextActionAt("");
+      const metrics = await refreshDashboard();
+      if (request === leadSelectionRequest.current && selectionLeadId === leadId) setDashboard(metrics);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "시퀀스를 중단하지 못했습니다.");
+      if (request === leadSelectionRequest.current && selectionLeadId === leadId) setError(requestError instanceof Error ? requestError.message : "시퀀스를 중단하지 못했습니다.");
     } finally {
-      setBusyAction("");
+      if (request === leadSelectionRequest.current && selectionLeadId === leadId) setBusyAction("");
     }
   }
 
   const activeDraft = drafts.find((draft) => draft.id === activeDraftId) ?? drafts[0] ?? null;
+  function selectDraft(draft: OutboundDraft) {
+    setActiveDraftId(draft.id);
+    setEditSubject(draft.subject);
+    setEditBody(draft.body);
+    setConfirmed(false);
+  }
+
+  function handleDraftTabKey(event: KeyboardEvent<HTMLButtonElement>) {
+    const index = drafts.findIndex((draft) => draft.id === Number(event.currentTarget.dataset.draftId));
+    const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? drafts.length - 1 : event.key === "ArrowRight" ? (index + 1) % drafts.length : event.key === "ArrowLeft" ? (index - 1 + drafts.length) % drafts.length : -1;
+    if (nextIndex < 0) return;
+    event.preventDefault();
+    selectDraft(drafts[nextIndex]);
+    document.getElementById(`draft-tab-${drafts[nextIndex].id}`)?.focus();
+  }
   const latestDraft = drafts[0] ?? null;
   const canGenerateDraft = !latestDraft || Boolean(latestDraft.reviewed && latestDraft.sent_at);
-  const nextStages = selected ? (NEXT_STAGES[selected.pipeline_stage] ?? []).filter((nextStage) => nextStage !== "contacted" && nextStage !== "dropped") : [];
+  const canOperate = canManage || selected?.assignee_id === currentStaffId;
+  const canSchedule = selected && ["approved", "contacted", "follow_up_due"].includes(selected.pipeline_stage);
+  const nextStages = selected ? (NEXT_STAGES[selected.pipeline_stage] ?? []).filter((nextStage) => !["contacted", "follow_up_due", "dropped"].includes(nextStage)) : [];
   return (
     <section className="workspace" aria-labelledby="leads-title" aria-busy={loading}>
       <div className="commandbar">
@@ -309,6 +405,7 @@ export default function Outbound({ session }: { session: Session }) {
       <form className="compact-filter" onSubmit={(event) => { event.preventDefault(); setOffset(0); setSearch(searchInput.trim()); }}>
         <label>리드 검색<input value={searchInput} onChange={(event) => setSearchInput(event.target.value)} placeholder="업체명 또는 주소" /></label>
         <label>단계<select value={stage} onChange={(event) => { setStage(event.target.value); setOffset(0); }}><option value="">전체</option>{Object.entries(STAGE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <label className="confirm-check"><input type="checkbox" checked={workQueue} onChange={(event) => { setWorkQueue(event.target.checked); setOffset(0); }} />다음 행동 예정</label>
         <button className="secondary-button" type="submit">검색</button>
       </form>
       {error ? <p className="error notice" role="alert">{error}</p> : null}
@@ -316,15 +413,15 @@ export default function Outbound({ session }: { session: Session }) {
         <div className="data-grid-wrap" role="region" aria-label="잠재고객 표, 가로 스크롤 가능" tabIndex={0}>
           <table className="data-grid leads-grid">
             <caption className="sr-only">리드 점수와 아웃바운드 진행 단계</caption>
-            <thead><tr><th scope="col">업체명</th><th scope="col">업종</th><th scope="col">주소</th><th scope="col">리드 점수</th><th scope="col">단계</th><th scope="col">다음 작업</th></tr></thead>
+            <thead><tr><th scope="col">업체명</th><th scope="col">업종</th><th scope="col">담당자</th><th scope="col">리드 점수</th><th scope="col">단계</th><th scope="col">다음 작업</th></tr></thead>
             <tbody>{leads.length ? leads.map((lead) => (
               <tr key={lead.id}>
                 <td><button className="company-link" type="button" onClick={() => openLead(lead)}><span className="company-avatar lead" aria-hidden="true">{lead.name.slice(0, 1)}</span><span>{lead.name}</span></button></td>
                 <td>{lead.business_type ?? "-"}</td>
-                <td className="address-cell">{lead.address ?? "-"}</td>
+                <td>{lead.assignee_name ?? "미배정"}</td>
                 <td><span className={`score-pill ${lead.lead_score >= 80 ? "hot" : lead.lead_score >= 60 ? "warm" : "cool"}`}><strong>{lead.lead_score}</strong><small>/100</small></span></td>
                 <td><span className={`status-badge stage-${lead.pipeline_stage}`}><span className="status-dot" aria-hidden="true" />{STAGE_LABELS[lead.pipeline_stage] ?? lead.pipeline_stage}</span></td>
-                <td><button className="text-button" type="button" onClick={() => openLead(lead)}>{lead.pipeline_stage === "discovered" ? "근거 확인 및 초안 생성" : "진행 내용 보기"}</button></td>
+                <td><button className="text-button" type="button" onClick={() => openLead(lead)}>{lead.next_action_at ? new Date(lead.next_action_at).toLocaleString("ko-KR") : lead.pipeline_stage === "discovered" ? "근거 확인 및 초안 생성" : "진행 내용 보기"}</button></td>
               </tr>
             )) : <tr><td colSpan={6}><EmptyState title="등록된 잠재고객이 없습니다" description="수집된 리드가 생기면 점수순으로 표시됩니다." /></td></tr>}</tbody>
           </table>
@@ -340,7 +437,17 @@ export default function Outbound({ session }: { session: Session }) {
           </div>
           <div className="panel-content">
             <div className="detail-meta"><span className={`status-badge stage-${selected.pipeline_stage}`}>{STAGE_LABELS[selected.pipeline_stage] ?? selected.pipeline_stage}</span><span>{selected.business_type ?? "업종 미상"}</span><span>{selected.address ?? "주소 미상"}</span></div>
-            {canManage && !["converted", "dropped"].includes(selected.pipeline_stage) ? <section className="lead-actions" aria-labelledby="lead-stage-title"><h3 id="lead-stage-title">진행 관리</h3>{nextStages.length ? <label>다음 단계<select defaultValue="" disabled={Boolean(busyAction)} onChange={(event) => { if (event.target.value) void changeStage(selected.id, event.target.value); event.target.value = ""; }}><option value="">선택</option>{nextStages.map((nextStage) => <option key={nextStage} value={nextStage}>{STAGE_LABELS[nextStage]}</option>)}</select></label> : null}<details><summary>실제 접촉 기록</summary><div className="contact-form"><label>채널<select value={contactChannel} onChange={(event) => setContactChannel(event.target.value)}><option value="phone">전화</option><option value="email">이메일</option><option value="meeting">미팅</option><option value="other">기타</option></select></label><label>메모<textarea value={contactNote} onChange={(event) => setContactNote(event.target.value)} maxLength={1000} /></label><button className="primary" type="button" disabled={Boolean(busyAction)} onClick={() => void recordContact(selected.id)}>접촉 기록</button></div></details><button className="danger-button" type="button" disabled={Boolean(busyAction)} onClick={() => { if (window.confirm("이 리드의 아웃바운드 시퀀스를 종결할까요?")) void stopSequence(selected.id); }}>시퀀스 중단</button></section> : null}
+            {canOperate && !["converted", "dropped"].includes(selected.pipeline_stage) ? (
+              <section className="lead-actions" aria-labelledby="lead-stage-title">
+                <h3 id="lead-stage-title">진행 관리</h3>
+                {canManage ? <label>담당자<select value={selected.assignee_id ?? ""} disabled={Boolean(busyAction)} onChange={(event) => { const member = staff.find((row) => row.id === event.target.value); void updateLead(selected.id, { assignee_id: event.target.value || null, assignee_name: member?.name ?? null }); }}><option value="">미배정</option>{staff.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label> : null}
+                <div className="contact-form"><label>담당자명<input value={contactName} maxLength={100} onChange={(event) => setContactName(event.target.value)} /></label><label>전화<input value={contactPhone} maxLength={30} onChange={(event) => setContactPhone(event.target.value)} /></label><label>이메일<input type="email" value={contactEmail} maxLength={320} onChange={(event) => setContactEmail(event.target.value)} /></label><button className="secondary-button" type="button" disabled={Boolean(busyAction)} onClick={() => void updateLead(selected.id, { contact_name: contactName || null, contact_phone: contactPhone || null, contact_email: contactEmail || null })}>연락처 저장</button></div>
+                {canSchedule ? <div className="contact-form"><label>다음 행동일<input type="datetime-local" value={nextActionAt} onChange={(event) => setNextActionAt(event.target.value)} /></label><button className="secondary-button" type="button" disabled={Boolean(busyAction) || !nextActionAt} onClick={() => void updateLead(selected.id, { next_action_at: new Date(nextActionAt).toISOString() })}>후속 일정 지정</button></div> : null}
+                {nextStages.length ? <label>다음 단계<select defaultValue="" disabled={Boolean(busyAction)} onChange={(event) => { if (event.target.value) void changeStage(selected.id, event.target.value); event.target.value = ""; }}><option value="">선택</option>{nextStages.map((nextStage) => <option key={nextStage} value={nextStage}>{STAGE_LABELS[nextStage]}</option>)}</select></label> : null}
+                <details><summary>실제 접촉 기록</summary><div className="contact-form"><label>채널<select value={contactChannel} onChange={(event) => setContactChannel(event.target.value)}><option value="phone">전화</option><option value="email">이메일</option><option value="meeting">미팅</option><option value="other">기타</option></select></label><label>메모<textarea value={contactNote} onChange={(event) => setContactNote(event.target.value)} maxLength={1000} /></label><button className="primary" type="button" disabled={Boolean(busyAction)} onClick={() => void recordContact(selected.id)}>접촉 기록</button></div></details>
+                <button className="danger-button" type="button" disabled={Boolean(busyAction)} onClick={() => { if (window.confirm("이 리드의 아웃바운드 시퀀스를 종결할까요?")) void stopSequence(selected.id); }}>시퀀스 중단</button>
+              </section>
+            ) : null}
             <section className="lead-score-card" aria-labelledby="lead-score-title">
               <div><h3 id="lead-score-title">리드 우선순위</h3>{canManage && selected.source === "sbiz" ? <button className="text-button" type="button" disabled={Boolean(busyAction)} onClick={() => void enrichBuilding(selected.id)}>{busyAction === "building" ? "확인 중…" : selected.reasoning.building_age ? "판단근거 새로고침" : "판단근거 보강"}</button> : null}</div>
               <strong>{selected.lead_score}<small>/100</small></strong>
@@ -356,23 +463,23 @@ export default function Outbound({ session }: { session: Session }) {
             <section className="draft-workflow" aria-labelledby="draft-title">
               <div className="section-heading compact">
                 <div><h3 id="draft-title">아웃바운드 메시지</h3><span>최대 3단계 시퀀스</span></div>
-                {canManage && drafts.length < 3 ? <button className="secondary-button" type="button" disabled={Boolean(busyAction) || !canGenerateDraft} onClick={() => void generateDraft(selected.id)}>{busyAction === "generate" ? "AI 작성 중…" : drafts.length ? "후속 초안 생성" : "첫 초안 생성"}</button> : null}
+                {canOperate && drafts.length < 3 ? <button className="secondary-button" type="button" disabled={Boolean(busyAction) || !canGenerateDraft} onClick={() => void generateDraft(selected.id)}>{busyAction === "generate" ? "AI 작성 중…" : drafts.length ? "후속 초안 생성" : "첫 초안 생성"}</button> : null}
               </div>
-              {canManage && latestDraft && drafts.length < 3 && !canGenerateDraft ? <p className="notice">후속 초안은 최신 초안을 검토하고 안전 발송 처리한 뒤 생성할 수 있습니다.</p> : null}
+              {canOperate && latestDraft && drafts.length < 3 && !canGenerateDraft ? <p className="notice">후속 초안은 최신 초안을 검토하고 안전 발송 처리한 뒤 생성할 수 있습니다.</p> : null}
               <ModeNotice mode={dashboard?.outbound_email_mode ?? "dry_run"} />
               {draftLoading ? <LoadingState label="저장된 초안을 불러오는 중" /> : drafts.length ? (
                 <>
-                  <div className="draft-tabs" aria-label="시퀀스 초안 선택">
-                    {drafts.map((draft) => <button key={draft.id} type="button" aria-pressed={activeDraft?.id === draft.id} className={activeDraft?.id === draft.id ? "active" : ""} onClick={() => { setActiveDraftId(draft.id); setEditSubject(draft.subject); setEditBody(draft.body); setConfirmed(false); }}>{draft.sequence_step}단계 {draft.sent_at ? "완료" : draft.reviewed ? "검토됨" : "초안"}</button>)}
+                  <div className="draft-tabs" role="tablist" aria-label="시퀀스 초안 선택">
+                    {drafts.map((draft) => <button key={draft.id} id={`draft-tab-${draft.id}`} data-draft-id={draft.id} type="button" role="tab" aria-selected={activeDraft?.id === draft.id} aria-controls={`draft-panel-${draft.id}`} tabIndex={activeDraft?.id === draft.id ? 0 : -1} className={activeDraft?.id === draft.id ? "active" : ""} onKeyDown={handleDraftTabKey} onClick={() => selectDraft(draft)}>{draft.sequence_step}단계 {draft.sent_at ? "완료" : draft.reviewed ? "검토됨" : "초안"}</button>)}
                   </div>
                   {activeDraft ? (
-                    <article className="draft-card">
+                    <article className="draft-card" id={`draft-panel-${activeDraft.id}`} role="tabpanel" aria-labelledby={`draft-tab-${activeDraft.id}`}>
                       <div className="draft-meta"><span>{activeDraft.sequence_step}단계</span><span>{new Date(activeDraft.generated_at).toLocaleString("ko-KR")}</span></div>
-                      {activeDraft.sent_at || !canManage ? <><h4>{activeDraft.subject}</h4><div className="draft-body">{activeDraft.body}</div></> : <div className="draft-editor"><label>제목<input value={editSubject} onChange={(event) => setEditSubject(event.target.value)} maxLength={300} /></label><label>본문<textarea value={editBody} onChange={(event) => setEditBody(event.target.value)} maxLength={20000} /></label><button className="secondary-button" type="button" disabled={Boolean(busyAction) || !editSubject.trim() || !editBody.trim() || (editSubject === activeDraft.subject && editBody === activeDraft.body)} onClick={() => void saveDraft(activeDraft)}>{busyAction === "edit" ? "저장 중…" : "수정 저장"}</button><p>수정하면 기존 검토 완료 상태가 해제되어 다시 검토해야 합니다.</p></div>}
+                      {activeDraft.sent_at || !canOperate ? <><h4>{activeDraft.subject}</h4><div className="draft-body">{activeDraft.body}</div></> : <div className="draft-editor"><label>제목<input value={editSubject} onChange={(event) => setEditSubject(event.target.value)} maxLength={300} /></label><label>본문<textarea value={editBody} onChange={(event) => setEditBody(event.target.value)} maxLength={20000} /></label><button className="secondary-button" type="button" disabled={Boolean(busyAction) || !editSubject.trim() || !editBody.trim() || (editSubject === activeDraft.subject && editBody === activeDraft.body)} onClick={() => void saveDraft(activeDraft)}>{busyAction === "edit" ? "저장 중…" : "수정 저장"}</button><p>수정하면 기존 검토 완료 상태가 해제되어 다시 검토해야 합니다.</p></div>}
                       {activeDraft.sent_at ? (
                         <p className="success notice" role="status">{activeDraft.send_mode === "dry_run" ? "드라이런 기록이 완료됐습니다." : "설정된 테스트 주소로 발송됐습니다."}</p>
-                      ) : !canManage ? (
-                        <p className="notice" role="status">영업 담당자는 아웃바운드 기록을 조회만 할 수 있습니다.</p>
+                      ) : !canOperate ? (
+                        <p className="notice" role="status">담당자만 아웃바운드 기록을 처리할 수 있습니다.</p>
                       ) : !activeDraft.reviewed ? (
                         <div className="draft-actions"><p>제목과 본문을 직접 읽고 문제없을 때만 검토를 완료하세요.</p><button className="primary" disabled={Boolean(busyAction)} onClick={() => void reviewDraft(activeDraft)}>{busyAction === "review" ? "저장 중…" : "내용 검토 완료"}</button></div>
                       ) : (
@@ -412,3 +519,5 @@ function humanizeAxis(axis: string) {
   };
   return labels[axis] ?? axis.replaceAll("_", " ");
 }
+
+function toLocalInput(value: string) { const date = new Date(value); return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16); }

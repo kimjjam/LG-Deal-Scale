@@ -19,7 +19,7 @@ from sqlalchemy import (
     Uuid,
 )
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 
@@ -160,10 +160,15 @@ class Assignment(Base):
 
 class SalesRegion(Base):
     __tablename__ = "sales_regions"
+    __table_args__ = (
+        UniqueConstraint(
+            "match_keyword", "manager_id", name="uq_sales_regions_keyword_manager"
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     region_name: Mapped[str] = mapped_column(String(100))
-    match_keyword: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    match_keyword: Mapped[str] = mapped_column(String(100), index=True)
     manager_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("staff.id"), index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -215,6 +220,33 @@ class Opportunity(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+    items: Mapped[list["OpportunityItem"]] = relationship(
+        back_populates="opportunity", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+    @property
+    def items_total(self) -> Decimal:
+        return sum((item.unit_price * item.quantity for item in self.items), Decimal(0))
+
+
+class OpportunityItem(Base):
+    __tablename__ = "opportunity_items"
+    __table_args__ = (
+        CheckConstraint("quantity > 0", name="ck_opportunity_item_quantity_positive"),
+        CheckConstraint("unit_price >= 0", name="ck_opportunity_item_unit_price_nonnegative"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    opportunity_id: Mapped[int] = mapped_column(
+        ForeignKey("opportunities.id", ondelete="CASCADE"), index=True
+    )
+    product_id: Mapped[int | None] = mapped_column(
+        ForeignKey("products.id", ondelete="SET NULL"), index=True
+    )
+    product_name: Mapped[str] = mapped_column(String(200))
+    quantity: Mapped[int] = mapped_column(Integer)
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    opportunity: Mapped[Opportunity] = relationship(back_populates="items")
 
 
 class OpportunityStageHistory(Base):
@@ -302,6 +334,13 @@ class Lead(Base):
     license_date: Mapped[date | None] = mapped_column(Date)
     years_in_business: Mapped[int | None] = mapped_column(Integer)
     business_type: Mapped[str | None] = mapped_column(String(100))
+    assignee_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("staff.id", ondelete="SET NULL"), index=True
+    )
+    contact_name: Mapped[str | None] = mapped_column(String(100))
+    contact_phone: Mapped[str | None] = mapped_column(String(30))
+    contact_email: Mapped[str | None] = mapped_column(String(320))
+    next_action_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     source: Mapped[str] = mapped_column(String(30), default="localdata")
     raw_data: Mapped[dict[str, Any]] = mapped_column(JsonType, default=dict)
     lead_score: Mapped[int] = mapped_column(Integer)

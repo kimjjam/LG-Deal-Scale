@@ -49,7 +49,7 @@ from app.schemas import (
 from app.scoring import calculate_fit
 
 
-def staff(role: str = "manager") -> Staff:
+def staff(role: str = "owner") -> Staff:
     return Staff(
         id=uuid.uuid4(),
         name=role,
@@ -279,14 +279,12 @@ async def test_public_product_filter_and_returning_attributes(
     )
     session.add_all([account, fridge, competitor, side_by_side, washer])
     await session.commit()
-    prompts: list[str] = []
     captured_raw: list[object] = []
     fit_at_creation: list[int] = []
 
     class LLM:
         async def text(self, prompt: str) -> str:
-            prompts.append(prompt)
-            return "추천 분석"
+            raise AssertionError(f"제출 분석은 LLM을 호출하면 안 됩니다: {prompt}")
 
     async def fake_create_inquiry(
         session: AsyncSession,
@@ -324,7 +322,9 @@ async def test_public_product_filter_and_returning_attributes(
                 business_name="재방문 호텔",
                 phone=account.phone,
                 inquiry="객실 냉장고가 필요합니다",
-                product="냉장고 6대",
+                product="냉장고",
+                quantity=6,
+                location="서울 중구",
                 business_type="호텔",
                 room_count=20,
                 purchase_stage="견적 요청",
@@ -336,14 +336,16 @@ async def test_public_product_filter_and_returning_attributes(
     assert [item.name for item in response.products] == ["객실 냉장고", "타사 객실 냉장고"]
     assert all(item.price is None for item in response.products)
     assert all(item.price_label == "사업자 가격 상담 필요" for item in response.products)
-    assert "양문형 냉장고" not in prompts[0]
-    assert "상업용 세탁기" not in prompts[0]
+    assert "객실 냉장고" in (response.analysis or "")
+    assert "양문형 냉장고" not in (response.analysis or "")
+    assert "상업용 세탁기" not in (response.analysis or "")
     assert account.attributes == {
-        "room_count": 20,
-        "business_type": "호텔",
+        "room_count": 12,
+        "business_type": "모텔",
         "unrelated": "keep",
+        "location": "서울중구",
     }
-    assert fit_at_creation == [60]
+    assert fit_at_creation == [30]
     assert response.inquiry_id
     assert response.nearby_store_status == "no_results"
     assert response.nearby_store_message == "검색 결과 없음"
@@ -370,7 +372,8 @@ async def test_public_product_filter_and_returning_attributes(
                 business_name="재방문 카페",
                 phone=account.phone,
                 inquiry="카페용 냉장고가 필요합니다",
-                product="냉장고 2대",
+                product="냉장고",
+                quantity=2,
                 business_type="카페",
                 seat_count=30,
                 location="서울 중구",
@@ -384,11 +387,12 @@ async def test_public_product_filter_and_returning_attributes(
     assert failed_response.nearby_store_status == "failed"
     assert "credential" not in failed_response.nearby_store_message
     assert account.attributes == {
-        "business_type": "카페",
-        "seat_count": 30,
+        "room_count": 12,
+        "business_type": "모텔",
         "unrelated": "keep",
+        "location": "서울중구",
     }
-    assert fit_at_creation == [60, 60]
+    assert fit_at_creation == [30, 30]
     assert failed_stored and failed_stored.raw_conversation
     assert failed_stored.raw_conversation[-1]["status"] == "failed"
 
@@ -565,8 +569,26 @@ def test_intake_requires_purchase_stage_and_timing() -> None:
     assert not _intake_complete(IntakeFields(**base))
     complete = {**base, "purchase_stage": "견적 요청", "purchase_timing": "즉시"}
     assert not _intake_complete(IntakeFields(**complete, business_type="호텔"))
-    assert _intake_complete(IntakeFields(**complete, business_type="호텔", room_count=12))
-    assert _intake_complete(IntakeFields(**complete, business_type="제조업"))
+    quote = {**complete, "product": "냉장고", "quantity": 2, "location": "서울"}
+    assert _intake_complete(IntakeFields(**quote, business_type="호텔", room_count=12))
+    assert _intake_complete(IntakeFields(**quote, business_type="제조업"))
+
+
+@pytest.mark.parametrize("stage", ["견적 요청", "모델 비교"])
+def test_quote_and_model_comparison_require_the_same_product_context(stage: str) -> None:
+    base = {
+        "business_name": "가상 업체",
+        "phone": "01012345678",
+        "inquiry": "에어컨 비교",
+        "business_type": "제조업",
+        "purchase_stage": stage,
+        "purchase_timing": "즉시",
+    }
+    assert not _intake_complete(IntakeFields(**base))
+    assert _intake_complete(
+        IntakeFields(**base, product="에어컨", quantity=2, location="서울 중구")
+    )
+    assert _intake_complete(IntakeFields(**{**base, "purchase_stage": "정보 수집"}))
 
 
 @pytest.mark.parametrize(
@@ -584,7 +606,7 @@ def test_supported_industry_requires_its_scale(business_type: str, field: str) -
         "phone": "01012345678",
         "inquiry": "가전 견적",
         "business_type": business_type,
-        "purchase_stage": "견적 요청",
+        "purchase_stage": "정보 수집",
         "purchase_timing": "즉시",
     }
     assert not _intake_complete(IntakeFields(**base))
@@ -601,6 +623,9 @@ def test_fallback_finishes_required_questions_before_optional_questions() -> Non
         ("구매 시기", {"purchase_timing": "1개월 이내"}),
         ("업종", {"business_type": "카페"}),
         ("좌석", {"seat_count": 30}),
+        ("제품을", {"product": "냉장고"}),
+        ("수량", {"quantity": 6}),
+        ("설치 지역", {"location": "서울 중구"}),
     ]
     for expected, update in steps:
         assert expected in _fallback_turn(fields).message
@@ -771,7 +796,7 @@ async def test_dashboard_uses_explicit_deterministic_denominators(
         "rate": 0.5,
         "definition": "won / (won + lost)",
     }
-    assert result["tasks"] == {"open": 1, "overdue": 1}
+    assert result["tasks"] == {"open": 1, "overdue": 1, "due_today": 0}
     assert result["average_stage_hours"]["qualify"] == 4.0
     assert result["average_stage_hours"]["propose"] is not None
     assert result["rep_stats"][0]["activity_count"] == 1

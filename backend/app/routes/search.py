@@ -12,7 +12,7 @@ from app.models import QueryLog
 from app.nl2sql import SCHEMA_WHITELIST, UnsafeQueryError, validate_sql
 from app.prompts import nl2sql_prompt
 from app.schemas import SearchRequest, SearchResponse
-from app.security import CurrentStaff
+from app.security import OwnerStaff
 
 router = APIRouter(prefix="/api/search", tags=["search"])
 Session = Annotated[AsyncSession, Depends(get_session)]
@@ -45,7 +45,7 @@ async def _record_query(
 
 @router.post("", response_model=SearchResponse)
 async def natural_language_search(
-    payload: SearchRequest, session: Session, staff: CurrentStaff
+    payload: SearchRequest, session: Session, staff: OwnerStaff
 ) -> SearchResponse:
     readonly_url = get_settings().effective_database_readonly_url
     if not readonly_url:
@@ -82,7 +82,7 @@ async def natural_language_search(
             generated,
             success=False,
             error_category="validation_error",
-            error_message=message,
+            error_message=str(error)[:200],
         )
         raise HTTPException(status_code=422, detail=message) from error
     readonly_engine = None

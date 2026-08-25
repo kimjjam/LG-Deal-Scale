@@ -1,7 +1,8 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, KeyboardEvent, useEffect, useState } from "react";
 
 import { api } from "../api";
 import type { Partner, SalesRegion, Session, StaffMember } from "../types";
+import CsvControls from "./CsvControls";
 import { EmptyState, LoadingState } from "./States";
 
 function fetchData(session: Session, canManage: boolean) {
@@ -13,7 +14,7 @@ function fetchData(session: Session, canManage: boolean) {
 }
 
 export default function PartnersRegions({ session }: { session: Session }) {
-  const canManage = session.role !== "rep";
+  const canManage = session.role === "owner";
   const [tab, setTab] = useState<"partners" | "regions">("partners");
   const [partners, setPartners] = useState<Partner[]>([]);
   const [regions, setRegions] = useState<SalesRegion[]>([]);
@@ -63,20 +64,34 @@ export default function PartnersRegions({ session }: { session: Session }) {
     }
   }
 
+  function handleTabKey(event: KeyboardEvent<HTMLButtonElement>) {
+    const tabs = Array.from(event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? []);
+    const index = tabs.indexOf(event.currentTarget);
+    const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : event.key === "ArrowRight" ? (index + 1) % tabs.length : event.key === "ArrowLeft" ? (index - 1 + tabs.length) % tabs.length : -1;
+    if (nextIndex < 0) return;
+    event.preventDefault();
+    const next = tabs[nextIndex];
+    setTab(next.dataset.tab as "partners" | "regions");
+    next.focus();
+  }
+
   return <section className="workspace" aria-labelledby="partners-title">
     <div className="commandbar"><div><h1 id="partners-title">파트너·지역</h1><p>검증된 파트너와 지역별 문의 라우팅을 관리합니다.</p></div></div>
     <div className="draft-tabs" role="tablist" aria-label="파트너와 지역 선택">
-      <button className={tab === "partners" ? "active" : ""} onClick={() => setTab("partners")}>총판·전문점</button>
-      <button className={tab === "regions" ? "active" : ""} onClick={() => setTab("regions")}>지역 담당</button>
+      <button id="partners-tab" data-tab="partners" role="tab" aria-selected={tab === "partners"} aria-controls="partners-panel" tabIndex={tab === "partners" ? 0 : -1} className={tab === "partners" ? "active" : ""} onKeyDown={handleTabKey} onClick={() => setTab("partners")}>총판·전문점</button>
+      <button id="regions-tab" data-tab="regions" role="tab" aria-selected={tab === "regions"} aria-controls="regions-panel" tabIndex={tab === "regions" ? 0 : -1} className={tab === "regions" ? "active" : ""} onKeyDown={handleTabKey} onClick={() => setTab("regions")}>지역 담당</button>
     </div>
     {error ? <p className="error notice" role="alert">{error}</p> : null}
-    {loading ? <LoadingState label="파트너·지역 정보를 불러오는 중" /> : tab === "partners" ? <>
+    {!loading && session.role === "manager" && regions.length === 0 ? <p className="notice" role="status">배정된 담당 지역이 없습니다. owner에게 지역 등록·배정을 요청하세요.</p> : null}
+    {loading ? <LoadingState label="파트너·지역 정보를 불러오는 중" /> : tab === "partners" ? <div id="partners-panel" role="tabpanel" aria-labelledby="partners-tab">
+      {canManage ? <><CsvControls session={session} importPath="/partners-regions/partners/import" filename="partners.csv" onImported={() => void load()} /><p className="helper-text">CSV 헤더: name,address,phone,region,partner_type,verification_source,verified_at,is_active</p></> : null}
       {canManage ? <PartnerForm session={session} partner={editPartner} onSaved={async () => { setEditPartner(null); await load(); }} onError={setError} /> : null}
-      <div className="data-grid-wrap" role="region" aria-label="검증된 파트너 목록" tabIndex={0}><table className="data-grid"><thead><tr><th>파트너</th><th>구분</th><th>매칭 지역 키워드</th><th>연락처</th><th>검증</th><th>상태</th></tr></thead><tbody>{partners.length ? partners.map((partner) => <tr key={partner.id}><td><strong>{partner.name}</strong><br /><small>{partner.address}</small></td><td>{partner.partner_type}</td><td>{partner.region}</td><td>{partner.phone ?? "-"}</td><td>{partner.verification_source}<br /><small>{partner.verified_at}</small></td><td>{canManage ? <><button className="text-button" onClick={() => setEditPartner(partner)}>수정</button> · <button className="text-button" onClick={() => void update(`/partners-regions/partners/${partner.id}`, { is_active: !partner.is_active })}>{partner.is_active ? "활성" : "비활성"}</button></> : partner.is_active ? "활성" : "비활성"}</td></tr>) : <tr><td colSpan={6}><EmptyState title="등록된 파트너가 없습니다" description="수동 검증한 파트너만 등록하세요." /></td></tr>}</tbody></table></div>
-    </> : <>
+      <div className="data-grid-wrap" role="region" aria-label="검증된 파트너 목록" tabIndex={0}><table className="data-grid"><thead><tr><th>파트너</th><th>구분</th><th>매칭 지역 키워드</th><th>연락처</th><th>검증</th><th>상태</th></tr></thead><tbody>{partners.length ? partners.map((partner) => <tr key={partner.id}><td><strong>{partner.name}</strong><br /><small>{partner.address}</small></td><td>{partner.partner_type}</td><td>{partner.region}</td><td>{partner.phone ?? "-"}</td><td>{partner.verification_source}<br /><small>{partner.verified_at}</small></td><td>{canManage ? <><button className="text-button" onClick={() => setEditPartner(partner)}>수정</button> · <button className="text-button" onClick={() => void update(`/partners-regions/partners/${partner.id}`, { is_active: !partner.is_active })}>{partner.is_active ? "비활성화" : "활성화"}</button></> : partner.is_active ? "활성" : "비활성"}</td></tr>) : <tr><td colSpan={6}><EmptyState title="등록된 파트너가 없습니다" description={canManage ? "CSV 또는 등록 폼으로 검증한 파트너를 등록하세요." : "owner에게 검증 파트너 등록을 요청하세요."} /></td></tr>}</tbody></table></div>
+    </div> : <div id="regions-panel" role="tabpanel" aria-labelledby="regions-tab">
+      {canManage ? <><CsvControls session={session} importPath="/partners-regions/regions/import" filename="sales-regions.csv" onImported={() => void load()} /><p className="helper-text">CSV 헤더: region_name,match_keyword,staff_email,is_active</p></> : null}
       {canManage ? <RegionForm session={session} managers={managers} region={editRegion} onSaved={async () => { setEditRegion(null); await load(); }} onError={setError} /> : null}
-      <div className="data-grid-wrap" role="region" aria-label="지역 담당 매핑 목록" tabIndex={0}><table className="data-grid"><thead><tr><th>지역</th><th>매칭 키워드</th><th>지역 매니저</th><th>상태</th></tr></thead><tbody>{regions.length ? regions.map((region) => <tr key={region.id}><td>{region.region_name}</td><td>{region.match_keyword}</td><td>{region.manager_name}</td><td>{canManage ? <><button className="text-button" onClick={() => setEditRegion(region)}>수정</button> · <button className="text-button" onClick={() => void update(`/partners-regions/regions/${region.id}`, { is_active: !region.is_active })}>{region.is_active ? "활성" : "비활성"}</button></> : region.is_active ? "활성" : "비활성"}</td></tr>) : <tr><td colSpan={4}><EmptyState title="등록된 지역 매핑이 없습니다" description="위치가 매칭되지 않으면 공용 미배정함에 남습니다." /></td></tr>}</tbody></table></div>
-    </>}
+      <div className="data-grid-wrap" role="region" aria-label="지역 담당 매핑 목록" tabIndex={0}><table className="data-grid"><thead><tr><th>지역</th><th>매칭 키워드</th><th>지역 매니저</th><th>상태</th></tr></thead><tbody>{regions.length ? regions.map((region) => <tr key={region.id}><td>{region.region_name}</td><td>{region.match_keyword}</td><td>{region.manager_name}</td><td>{canManage ? <><button className="text-button" onClick={() => setEditRegion(region)}>수정</button> · <button className="text-button" onClick={() => void update(`/partners-regions/regions/${region.id}`, { is_active: !region.is_active })}>{region.is_active ? "비활성화" : "활성화"}</button></> : region.is_active ? "활성" : "비활성"}</td></tr>) : <tr><td colSpan={4}><EmptyState title="등록된 지역 매핑이 없습니다" description={canManage ? "시·도를 포함한 지역 키워드를 등록하세요." : "owner에게 담당 지역 등록·배정을 요청하세요."} /></td></tr>}</tbody></table></div>
+    </div>}
   </section>;
 }
 

@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 
 import { api, sessionStaffId } from "../api";
-import type { ActivityType, AssignmentResult, Inquiry, InquiryStatus, IntentCategory, NearbyStoreStatus, Partner, Session, StaffMember } from "../types";
+import type { ActivityType, AssignmentResult, Inquiry, InquiryStatus, IntentCategory, NearbyStoreStatus, Partner, SalesRegion, Session, StaffMember } from "../types";
 import DetailDialog from "./DetailDialog";
 import { EmptyState, LoadingState } from "./States";
 
@@ -19,7 +19,7 @@ const NEARBY_STATUS_LABELS: Record<NearbyStoreStatus, string> = {
 };
 const PAGE_SIZE = 25;
 const MAX_AMOUNT = 999999999999.99;
-type InboxScope = "unassigned" | "mine" | "my_region" | "all";
+type InboxScope = "" | "unassigned" | "mine" | "my_region" | "all";
 
 export default function Inbox({ session }: { session: Session }) {
   const isManager = session.role !== "rep";
@@ -27,7 +27,8 @@ export default function Inbox({ session }: { session: Session }) {
   const [inquiries, setInquiries] = useState<Inquiry[]>([]);
   const [staff, setStaff] = useState<StaffMember[]>([]);
   const [partners, setPartners] = useState<Partner[]>([]);
-  const [scope, setScope] = useState<InboxScope>(isManager ? "all" : "unassigned");
+  const [managerHasRegion, setManagerHasRegion] = useState(true);
+  const [scope, setScope] = useState<InboxScope>(session.role === "manager" ? "my_region" : session.role === "owner" ? "all" : "unassigned");
   const [sort, setSort] = useState<"priority" | "latest">("priority");
   const [offset, setOffset] = useState(0);
   const [hasNext, setHasNext] = useState(false);
@@ -49,16 +50,18 @@ export default function Inbox({ session }: { session: Session }) {
   useEffect(() => {
     let active = true;
     Promise.all([
-      api<Inquiry[]>(`/inquiries?scope=${scope}&sort_by=${sort}&limit=${PAGE_SIZE + 1}&offset=${offset}`, {}, session),
+      api<Inquiry[]>(`/inquiries?${scope ? `scope=${scope}&` : ""}sort_by=${sort}&limit=${PAGE_SIZE + 1}&offset=${offset}`, {}, session),
       isManager ? api<StaffMember[]>("/staff?role=rep", {}, session) : Promise.resolve([]),
-      isManager ? api<Partner[]>("/partners-regions/partners", {}, session) : Promise.resolve([])
-    ]).then(([inquiryRows, staffRows, partnerRows]) => {
+      isManager ? api<Partner[]>("/partners-regions/partners", {}, session) : Promise.resolve([]),
+      session.role === "manager" ? api<SalesRegion[]>("/partners-regions/regions", {}, session) : Promise.resolve([])
+    ]).then(([inquiryRows, staffRows, partnerRows, regionRows]) => {
       if (active) {
         setHasNext(inquiryRows.length > PAGE_SIZE);
         const page = inquiryRows.slice(0, PAGE_SIZE);
         setInquiries(page);
         setStaff(staffRows.filter((member) => member.is_active));
         setPartners(partnerRows.filter((partner) => partner.is_active));
+        setManagerHasRegion(session.role !== "manager" || regionRows.length > 0);
         setSelected((current) => page.find((row) => row.id === current?.id) ?? null);
       }
     }).catch((requestError: unknown) => {
@@ -128,7 +131,7 @@ export default function Inbox({ session }: { session: Session }) {
   }
 
   async function refresh(inquiryId: number) {
-    const rows = await api<Inquiry[]>(`/inquiries?scope=${scope}&sort_by=${sort}&limit=${PAGE_SIZE + 1}&offset=${offset}`, {}, session);
+    const rows = await api<Inquiry[]>(`/inquiries?${scope ? `scope=${scope}&` : ""}sort_by=${sort}&limit=${PAGE_SIZE + 1}&offset=${offset}`, {}, session);
     setHasNext(rows.length > PAGE_SIZE);
     const page = rows.slice(0, PAGE_SIZE);
     setInquiries(page);
@@ -159,6 +162,10 @@ export default function Inbox({ session }: { session: Session }) {
   async function submitActivity(event: FormEvent) {
     event.preventDefault();
     if (!selected) return;
+    if ((activityType === "call" || activityType === "email") && !activityContent.trim()) {
+      setError("통화·이메일 응대 내용을 입력해주세요.");
+      return;
+    }
     if (await perform(selected.id, () => api("/crm/activities", { method: "POST", body: JSON.stringify({ account_id: selected.account_id, inquiry_id: selected.id, type: activityType, content: activityContent || null }) }, session), "활동을 기록하지 못했습니다.")) setActivityContent("");
   }
 
@@ -198,8 +205,8 @@ export default function Inbox({ session }: { session: Session }) {
             <select value={scope} onChange={(event) => changeScope(event.target.value as InboxScope)}>
               <option value="unassigned">미배정 문의</option>
               <option value="mine">내 문의함</option>
-              {session.role === "manager" ? <option value="my_region">내 지역 문의</option> : null}
-              <option value="all">전체 문의</option>
+              {session.role === "manager" ? <option value="my_region">내 담당 지역</option> : null}
+              <option value="all">전체 문의(권한 범위)</option>
             </select>
           </label>
           <label>정렬
@@ -213,6 +220,7 @@ export default function Inbox({ session }: { session: Session }) {
       </div>
 
       {error ? <p className="error notice" role="alert">{error}</p> : null}
+      {!loading && session.role === "manager" && !managerHasRegion ? <p className="notice" role="status">배정된 담당 지역 없음</p> : null}
       {loading ? <LoadingState label="문의 우선순위를 정리하는 중" /> : (
         <div className="data-grid-wrap" role="region" aria-label="문의 인박스 표, 가로 스크롤 가능" tabIndex={0}>
           <table className="data-grid inbox-grid">
@@ -307,7 +315,7 @@ export default function Inbox({ session }: { session: Session }) {
               </>
             ) : <EmptyState title="아직 점수가 없습니다" description="스코어링 재시도를 실행해 우선순위를 계산하세요." />}
             {canMutateSelected && selected.score ? <details className="inline-form"><summary>구매 의도 수정</summary><form onSubmit={submitIntent}><label>분류<select value={intent} onChange={(event) => setIntent(event.target.value as IntentCategory)}><option value="구매임박">구매임박</option><option value="정보탐색">정보탐색</option><option value="AS·불만">AS·불만</option></select></label><label>수정 근거<textarea value={intentReason} onChange={(event) => setIntentReason(event.target.value)} required maxLength={1000} /></label><button className="primary" disabled={busyId === selected.id}>수정</button></form></details> : null}
-            {canMutateSelected ? <><details className="inline-form"><summary>활동 기록</summary><form onSubmit={submitActivity}><label>유형<select value={activityType} onChange={(event) => setActivityType(event.target.value as ActivityType)}><option value="call">통화</option><option value="email">이메일</option><option value="meeting">미팅</option><option value="note">메모</option><option value="purchase">구매</option></select></label><label>내용<textarea value={activityContent} onChange={(event) => setActivityContent(event.target.value)} maxLength={10000} /></label><button className="primary" disabled={busyId === selected.id}>기록</button></form></details>
+            {canMutateSelected ? <><details className="inline-form"><summary>응대 기록</summary><form onSubmit={submitActivity}><label>유형<select value={activityType} onChange={(event) => setActivityType(event.target.value as ActivityType)}><option value="call">통화</option><option value="email">이메일</option><option value="meeting">미팅</option><option value="note">메모</option><option value="purchase">구매</option></select></label><label>내용<textarea value={activityContent} onChange={(event) => setActivityContent(event.target.value)} required={activityType === "call" || activityType === "email"} maxLength={10000} /></label><button className="primary" disabled={busyId === selected.id}>기록</button></form></details>
             <details className="inline-form"><summary>후속 할 일 생성</summary><form onSubmit={submitTask}><label>할 일<input value={taskTitle} onChange={(event) => setTaskTitle(event.target.value)} required /></label><label>마감<input type="datetime-local" value={taskDueAt} onChange={(event) => setTaskDueAt(event.target.value)} required /></label><button className="primary" disabled={busyId === selected.id || !selected.assignee_id}>생성</button></form></details>
             <details className="inline-form"><summary>영업기회로 전환</summary><form onSubmit={submitConversion}><label>영업기회 제목<input value={dealTitle} onChange={(event) => setDealTitle(event.target.value)} required /></label><label>예상 금액<input type="number" min="0" max={MAX_AMOUNT} step="0.01" value={dealAmount} onChange={(event) => setDealAmount(event.target.value)} /></label><button className="primary" disabled={busyId === selected.id || selected.status === "resolved"}>전환</button></form></details></> : null}
           </div>

@@ -66,6 +66,14 @@ export interface PublicResult {
   stores: Array<{ name: string; address: string; phone: string }>;
   nearby_store_status: NearbyStoreStatus;
   nearby_store_message: string;
+  regional_team_connected: boolean;
+  partner?: {
+    name: string;
+    address: string;
+    phone: string | null;
+    partner_type: string;
+    verified_at: string;
+  } | null;
 }
 
 export interface InquiryScore {
@@ -132,8 +140,39 @@ export interface Opportunity {
   expected_close_date: string | null;
   stage: OpportunityStage;
   loss_reason: string | null;
+  items: OpportunityItem[];
+  items_total: string | number;
   created_at: string;
   updated_at: string;
+}
+
+export interface OpportunityItem {
+  id: number;
+  opportunity_id: number;
+  product_id: number | null;
+  product_name: string;
+  quantity: number;
+  unit_price: string | number;
+}
+
+export interface OpportunityPatch {
+  expected_updated_at: string;
+  assignee_id?: string;
+  title?: string;
+  amount?: string | number | null;
+  probability?: number;
+  expected_close_date?: string | null;
+  stage?: OpportunityStage;
+  loss_reason?: string | null;
+  items: Array<Omit<OpportunityItem, "id" | "opportunity_id"> & { id: number | null }>;
+}
+
+export interface VerifiedProduct {
+  id: number;
+  name: string;
+  brand: string;
+  category: string;
+  price: string | number;
 }
 
 export interface Activity {
@@ -178,6 +217,10 @@ export interface AccountOverview {
   opportunities: Opportunity[];
   tasks: Task[];
   timeline: TimelineItem[];
+}
+
+export interface AccountDataQuality {
+  duplicate_contacts: Array<{ field: "phone" | "email"; value: string; contact_ids: number[] }>;
 }
 
 export interface InquiryStatusResult {
@@ -227,6 +270,12 @@ export interface Lead {
   name: string;
   address?: string | null;
   business_type?: string | null;
+  assignee_id?: string | null;
+  assignee_name?: string | null;
+  contact_name?: string | null;
+  contact_phone?: string | null;
+  contact_email?: string | null;
+  next_action_at?: string | null;
   source: string;
   lead_score: number;
   reasoning: Record<string, string>;
@@ -269,7 +318,8 @@ export interface CrmDashboard {
   weighted_amount: number;
   stage_probabilities: Record<OpportunityStage, number>;
   closed_conversion: { won: number; lost: number; denominator: number; rate: number | null; definition: string };
-  tasks: { open: number; overdue: number };
+  tasks: { open: number; overdue: number; due_today: number };
+  forecast: { months: Array<{ month: string; count: number; amount: number; weighted_amount: number }>; missing_close_date: number };
   rep_stats: Array<{ staff_id: string; name: string; activity_count: number; opportunity_count: number; won_count: number; won_amount: number }>;
   average_stage_hours: Record<OpportunityStage, number | null>;
   ai_score_buckets: Array<{ range: string; scored_inquiries: number; closed_opportunities: number; won_opportunities: number; won_conversion: number | null }>;

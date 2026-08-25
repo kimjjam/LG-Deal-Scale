@@ -18,7 +18,12 @@ def test_sqlite_phase4_migration_round_trip(
             PRAGMA foreign_keys=ON;
             CREATE TABLE accounts (id INTEGER PRIMARY KEY);
             CREATE TABLE staff (id CHAR(32) PRIMARY KEY);
-            CREATE TABLE leads (id INTEGER PRIMARY KEY);
+            CREATE TABLE leads (
+                id INTEGER PRIMARY KEY,
+                pipeline_stage VARCHAR(30) NOT NULL,
+                created_at DATETIME NOT NULL
+            );
+            CREATE TABLE opportunities (id INTEGER PRIMARY KEY);
             CREATE TABLE products (
                 id INTEGER PRIMARY KEY, name VARCHAR(200) NOT NULL,
                 brand VARCHAR(100) NOT NULL, category VARCHAR(100) NOT NULL,
@@ -39,6 +44,7 @@ def test_sqlite_phase4_migration_round_trip(
                 CONSTRAINT ck_assignment_method CHECK (method IN ('round_robin', 'manual'))
             );
             CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL PRIMARY KEY);
+            INSERT INTO leads VALUES (1, 'follow_up_due', '2026-08-01 09:00:00');
             INSERT INTO alembic_version VALUES ('0003');
             """
         )
@@ -53,7 +59,29 @@ def test_sqlite_phase4_migration_round_trip(
         command.upgrade(config, "head")
         with sqlite3.connect(database) as connection:
             assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-                "0007",
+                "0010",
+            )
+            lead_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(leads)").fetchall()
+            }
+            assert {
+                "assignee_id",
+                "contact_name",
+                "contact_phone",
+                "contact_email",
+                "next_action_at",
+            }.issubset(lead_columns)
+            assert connection.execute(
+                "SELECT pipeline_stage, next_action_at FROM leads WHERE id = 1"
+            ).fetchone() == ("follow_up_due", "2026-08-01 09:00:00")
+            assert {
+                "opportunity_id",
+                "product_id",
+                "product_name",
+                "quantity",
+                "unit_price",
+            }.issubset(
+                {row[1] for row in connection.execute("PRAGMA table_info(opportunity_items)")}
             )
             with pytest.raises(sqlite3.IntegrityError):
                 connection.execute(
@@ -61,6 +89,20 @@ def test_sqlite_phase4_migration_round_trip(
                     "(id, name, brand, category, price, price_type, is_verified, product_url, updated_at) "
                     "VALUES (1, '잘못된 가격', '가상', '기타', 0, 'retail_reference', 0, "
                     "'https://example.test/product', CURRENT_TIMESTAMP)"
+                )
+            connection.execute("INSERT INTO staff VALUES ('manager-a')")
+            connection.execute("INSERT INTO staff VALUES ('manager-b')")
+            connection.execute(
+                "INSERT INTO sales_regions "
+                "(region_name, match_keyword, manager_id, is_active, created_at) VALUES "
+                "('서울', '서울', 'manager-a', 1, CURRENT_TIMESTAMP), "
+                "('서울', '서울', 'manager-b', 1, CURRENT_TIMESTAMP)"
+            )
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    "INSERT INTO sales_regions "
+                    "(region_name, match_keyword, manager_id, is_active, created_at) VALUES "
+                    "('서울', '서울', 'manager-a', 1, CURRENT_TIMESTAMP)"
                 )
             connection.execute("INSERT INTO accounts VALUES (1)")
             connection.execute("INSERT INTO staff VALUES ('rep')")
