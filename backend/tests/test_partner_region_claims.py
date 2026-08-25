@@ -50,6 +50,7 @@ from app.schemas import (
     PublicSubmissionRequest,
     SalesRegionCreate,
     StaffActiveUpdate,
+    StaffIdentity,
     StaffRoleUpdate,
     normalize_region_text,
     seoul_business_date,
@@ -1302,6 +1303,15 @@ def test_partner_region_seed_covers_two_managers_per_region_and_all_partners() -
     assert Counter(item["match_keyword"] for item in managers) == {
         keyword: 2 for _, keyword, _ in REGIONS
     }
+    assert all(item["email"].endswith("@example.com") for item in managers)
+    for item in managers:
+        StaffIdentity(
+            id=uuid.uuid4(),
+            name=item["name"],
+            email=item["email"],
+            role="manager",
+            is_active=True,
+        )
     assert len(partners) == 519
     assert Counter(item.partner_type for item in partners) == {"전문점": 249, "기타": 270}
     assert {item.region for item in partners} == {region_name for region_name, _, _ in REGIONS}

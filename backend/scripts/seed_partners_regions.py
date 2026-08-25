@@ -85,7 +85,7 @@ def regional_manager_rows() -> list[dict[str, str]]:
     return [
         {
             "name": f"{keyword} 지역담당 {number:02d}",
-            "email": f"region-{slug}-{number:02d}@daonbiz.test",
+            "email": f"region-{slug}-{number:02d}@example.com",
             "region_name": region_name,
             "match_keyword": keyword,
         }
@@ -152,20 +152,29 @@ async def main() -> None:
         raise RuntimeError("SEED_STAFF_PASSWORD is required")
     manager_rows = regional_manager_rows()
     partner_rows = load_partner_rows()
-    manager_emails = {item["email"] for item in manager_rows}
+    current_emails = {item["email"] for item in manager_rows}
+    legacy_emails = {email.replace("@example.com", "@daonbiz.test") for email in current_emails}
     hashed_password = hash_password(password)
 
     async with SessionLocal() as session, session.begin():
         managers = {
             item.email: item
             for item in (
-                await session.scalars(select(Staff).where(Staff.email.in_(manager_emails)))
+                await session.scalars(
+                    select(Staff).where(Staff.email.in_(current_emails | legacy_emails))
+                )
             ).all()
         }
         for item in manager_rows:
-            manager = managers.get(item["email"])
+            legacy_email = item["email"].replace("@example.com", "@daonbiz.test")
+            current_manager = managers.get(item["email"])
+            legacy_manager = managers.get(legacy_email)
+            if current_manager and legacy_manager and current_manager.id != legacy_manager.id:
+                raise RuntimeError(f"duplicate regional manager: {item['name']}")
+            manager = current_manager or legacy_manager
             if manager:
                 manager.name = item["name"]
+                manager.email = item["email"]
                 manager.role = "manager"
                 manager.is_active = True
             else:
@@ -176,7 +185,7 @@ async def main() -> None:
                     hashed_password=hashed_password,
                 )
                 session.add(manager)
-                managers[item["email"]] = manager
+            managers[item["email"]] = manager
         await session.flush()
 
         keywords = {item["match_keyword"] for item in manager_rows}
