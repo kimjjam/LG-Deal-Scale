@@ -299,7 +299,7 @@ export default function PublicInquiry() {
             <section className="result-section">
               <div className="section-heading compact"><div><h3>지역 상담 연결</h3><span>입력한 지역을 기준으로 등록된 담당팀과 파트너를 확인합니다.</span></div></div>
               <p className="regional-team-status">{result.regional_team_connected ? "해당 지역 담당팀에 상담이 전달되었습니다." : "지역 담당팀을 확인한 후 안내드리겠습니다."}</p>
-              {result.partner ? <article className="store-card"><div><strong>{result.partner.name} · {result.partner.partner_type}</strong><p>{result.partner.address}</p><small>{result.partner.verified_at} 기준 등록 정보</small></div>{result.partner.phone ? <a aria-label={`${result.partner.name} 전화 ${result.partner.phone}`} href={`tel:${result.partner.phone.replace(/[^\d+]/g, "")}`}>{result.partner.phone}</a> : null}</article> : <EmptyResult text="현재 지역에 매칭된 검증 파트너가 없어 담당팀이 확인 후 안내드립니다." />}
+              {result.partner ? <article className="store-card"><div><strong>{result.partner.name} · {result.partner.partner_type}</strong><p>{result.partner.address}</p><small>{result.partner.verified_at} 기준 등록 정보</small></div><div className="store-card-actions">{result.partner.phone ? <a aria-label={`${result.partner.name} 전화 ${result.partner.phone}`} href={`tel:${result.partner.phone.replace(/[^\d+]/g, "")}`}>{result.partner.phone}</a> : null}<a href={`https://map.naver.com/p/search/${encodeURIComponent(`${result.partner.name} ${result.partner.address}`)}`} target="_blank" rel="noreferrer">네이버 지도에서 보기<span className="sr-only"> (새 창)</span><span aria-hidden="true">↗</span></a></div></article> : <EmptyResult text="현재 지역에 매칭된 검증 파트너가 없어 담당팀이 확인 후 안내드립니다." />}
             </section>
 
             <section className="result-section">

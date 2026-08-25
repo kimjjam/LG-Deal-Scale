@@ -564,6 +564,8 @@ textarea::placeholder { color: #9aa2a9; }
 .store-card strong { font-size: 11px; }
 .store-card p { margin: 3px 0 0; color: var(--muted); font-size: 9px; }
 .store-card a { flex: 0 0 auto; font-size: 10px; font-weight: 750; }
+.store-card-actions { display: grid; flex: 0 0 auto; gap: 6px; justify-items: end; }
+.store-card-actions a:last-child { color: var(--brand); text-decoration: none; }
 .inline-empty { margin: 0; padding: 16px; border-radius: var(--radius-sm); background: var(--panel-soft); color: var(--muted); font-size: 10px; text-align: center; }
 .result-actions { display: flex; gap: 8px; margin-top: 14px; }
 .result-actions > * { flex: 1; }
