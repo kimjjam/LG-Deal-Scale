@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "directdesk-api"
 version = "0.1.0"
-description = "LG Deal Scale CRM API"
+description = "LG E PARTNER PORTAL CRM API"
 requires-python = ">=3.10"
 dependencies = [
   "alembic>=1.16,<2",

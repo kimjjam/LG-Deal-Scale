@@ -337,7 +337,7 @@ async def test_outbound_draft_payload_and_dashboard_mode(
 
     assert created["subject"] == "[공급 계약 제안] 맞춤 제안"
     assert created["body"] == (
-        "안녕하세요. LG Deal Scale 담당자 김담당입니다.\n\n"
+        "안녕하세요. LG E PARTNER PORTAL 담당자 김담당입니다.\n\n"
         "숙박업 운영 환경에 맞춘 제안입니다.\n\n"
         "구체적인 공급 수량과 일정, 계약 조건은 검토 후 협의를 통해 정리하겠습니다.\n\n"
         "감사합니다.\n김담당 드림"

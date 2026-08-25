@@ -76,9 +76,9 @@ export default function InternalApp() {
   return (
     <div className="internal-shell">
       <nav className="sidebar" aria-label="주요 메뉴">
-        <a className="internal-brand" href="/" aria-label="LG Deal Scale 홈">
+        <a className="internal-brand" href="/" aria-label="LG E PARTNER PORTAL 홈">
           <span className="brand-symbol small" aria-hidden="true">LG</span>
-          <span className="brand-copy"><strong>LG Deal Scale</strong><small>SALES WORKSPACE</small></span>
+          <span className="brand-copy"><strong>LG E PARTNER PORTAL</strong><small>SALES WORKSPACE</small></span>
         </a>
 
         <div className="nav-group">
