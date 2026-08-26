@@ -250,6 +250,7 @@ class ProductRecommendation(BaseModel):
     price_label: str
     price_source_url: str | None = None
     price_verified_at: date | None = None
+    usage_label: str | None = None
     product_url: str
 
 

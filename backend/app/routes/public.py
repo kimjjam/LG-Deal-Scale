@@ -47,6 +47,12 @@ FINGERPRINT_FIELDS = (
     "purchase_stage",
     "purchase_timing",
 )
+PRODUCT_USAGE_LABELS = {
+    "guest_room": "객실용",
+    "common_area": "공용 공간용",
+    "residential_large": "공용 주방·라운지용",
+    "laundry_room": "세탁실용",
+}
 
 
 class ChatAIResult(BaseModel):
@@ -113,17 +119,13 @@ def _relevant_products(products: list[Product], fields: IntakeFields) -> list[Pr
         name = product.name.lower()
         category = product.category.lower()
         if (
-            lodging_room_fridge
-            and product.category == "냉장고"
-            and product.usage_context != "guest_room"
-        ):
-            continue
-        if (
             category in haystack
             or name in haystack
             or any(term in name or term in category for term in terms)
         ):
             matched.append(product)
+    if lodging_room_fridge:
+        matched.sort(key=lambda product: product.usage_context != "guest_room")
     return matched[:10]
 
 
@@ -405,6 +407,7 @@ async def submit(
                 "price_label": price_label,
                 "price_source_url": price_source_url,
                 "price_verified_at": price_verified_at,
+                "usage_label": PRODUCT_USAGE_LABELS.get(product.usage_context),
                 "product_url": product.product_url,
             }
         )

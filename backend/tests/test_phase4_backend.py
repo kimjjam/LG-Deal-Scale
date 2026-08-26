@@ -333,11 +333,20 @@ async def test_public_product_filter_and_returning_attributes(
         ),
         session,
     )
-    assert [item.name for item in response.products] == ["객실 냉장고", "타사 객실 냉장고"]
+    assert [item.name for item in response.products] == [
+        "객실 냉장고",
+        "타사 객실 냉장고",
+        "LG 양문형 냉장고",
+    ]
+    assert [item.usage_label for item in response.products] == [
+        "객실용",
+        "객실용",
+        "공용 주방·라운지용",
+    ]
     assert all(item.price is None for item in response.products)
     assert all(item.price_label == "사업자 가격 상담 필요" for item in response.products)
     assert "객실 냉장고" in (response.analysis or "")
-    assert "양문형 냉장고" not in (response.analysis or "")
+    assert "양문형 냉장고" in (response.analysis or "")
     assert "상업용 세탁기" not in (response.analysis or "")
     assert account.attributes == {
         "room_count": 12,
@@ -535,7 +544,7 @@ def test_product_filter_handles_compound_terms_without_catalog_fallback() -> Non
     "business_type",
     ["숙박업", "호텔업", "관광호텔", "리조트", "  모텔  "],
 )
-def test_lodging_fridge_filter_rejects_large_residential_models(
+def test_lodging_fridge_filter_prioritizes_guest_room_models(
     business_type: str,
 ) -> None:
     guest_room = Product(
@@ -555,9 +564,9 @@ def test_lodging_fridge_filter_rejects_large_residential_models(
         product_url="large",
     )
     assert _relevant_products(
-        [guest_room, side_by_side],
+        [side_by_side, guest_room],
         IntakeFields(business_type=business_type, inquiry="객실 냉장고 6대 필요"),
-    ) == [guest_room]
+    ) == [guest_room, side_by_side]
 
 
 def test_intake_requires_purchase_stage_and_timing() -> None:

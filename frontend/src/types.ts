@@ -46,6 +46,7 @@ export interface ProductRecommendation {
   price_label: string;
   price_source_url?: string | null;
   price_verified_at?: string | null;
+  usage_label?: string | null;
   product_url: string;
 }
 
