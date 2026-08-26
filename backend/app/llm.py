@@ -15,6 +15,8 @@ class LLMClient(Protocol):
 
     async def structured(self, prompt: str, result_type: type[ResultT]) -> ResultT: ...
 
+    async def search_structured(self, prompt: str, result_type: type[ResultT]) -> ResultT: ...
+
     async def text(self, prompt: str) -> str: ...
 
 
@@ -31,7 +33,9 @@ class GoogleLLMClient:
             f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
         )
 
-    async def _generate(self, prompt: str, schema: dict[str, Any] | None = None) -> str:
+    async def _generate(
+        self, prompt: str, schema: dict[str, Any] | None = None, *, google_search: bool = False
+    ) -> str:
         generation_config: dict[str, Any] = {}
         if schema:
             generation_config = {
@@ -42,14 +46,25 @@ class GoogleLLMClient:
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": generation_config,
         }
+        if google_search:
+            payload["tools"] = [{"googleSearch": {}}, {"urlContext": {}}]
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(self.url, params={"key": self.api_key}, json=payload)
             response.raise_for_status()
         data = response.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+        candidate = data["candidates"][0]
+        if google_search and not candidate.get("groundingMetadata"):
+            raise ValueError("Gemini response was not grounded by Google Search")
+        return candidate["content"]["parts"][0]["text"]
 
     async def structured(self, prompt: str, result_type: type[ResultT]) -> ResultT:
         raw = await self._generate(prompt, result_type.model_json_schema())
+        return result_type.model_validate(json.loads(raw))
+
+    async def search_structured(self, prompt: str, result_type: type[ResultT]) -> ResultT:
+        raw = await self._generate(
+            prompt, result_type.model_json_schema(), google_search=True
+        )
         return result_type.model_validate(json.loads(raw))
 
     async def text(self, prompt: str) -> str:

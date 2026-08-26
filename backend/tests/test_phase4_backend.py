@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
+from app.llm import GoogleLLMClient
 from app.localdata import SERVICE_ID, parse_localdata_rows
 from app.models import (
     Account,
@@ -551,16 +552,104 @@ def test_product_filter_handles_compound_terms_without_catalog_fallback() -> Non
     assert _relevant_products(products, IntakeFields(inquiry="에어컨 문의")) == []
 
 
-def test_product_filter_excludes_other_brands_and_fills_lg_pair() -> None:
+def test_product_filter_never_fills_with_another_category() -> None:
     fridge = Product(name="LG 냉장고", brand="LG", category="냉장고", price=1, product_url="lg")
     tv = Product(name="LG TV", brand="LG", category="TV", price=1, product_url="tv")
     competitor = Product(
         name="타사 냉장고", brand="Competitor", category="냉장고", price=1, product_url="other"
     )
-    assert _relevant_products([competitor, fridge, tv], IntakeFields(inquiry="냉장고 문의")) == [
-        fridge,
-        tv,
+    assert _relevant_products(
+        [competitor, fridge, tv], IntakeFields(inquiry="냉장고 문의")
+    ) == [fridge]
+    assert public._requested_category(
+        IntakeFields(product="에어컨", inquiry="기존 냉장고와 함께 비교")
+    ) == "에어컨"
+
+
+@pytest.mark.asyncio
+async def test_google_search_structured_enables_search_and_url_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "candidates": [
+                    {
+                        "content": {"parts": [{"text": '{"products": []}'}]},
+                        "groundingMetadata": {"webSearchQueries": ["LG 냉장고"]},
+                    }
+                ]
+            }
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def post(self, _url: str, **kwargs: object) -> Response:
+            captured.update(kwargs)
+            return Response()
+
+    monkeypatch.setattr("app.llm.httpx.AsyncClient", lambda **_kwargs: Client())
+    client = GoogleLLMClient.__new__(GoogleLLMClient)
+    client.api_key = "not-a-secret"
+    client.model = "gemini-test"
+    client.url = "https://example.test/generate"
+
+    result = await client.search_structured("냉장고 검색", public.OfficialProductSearchResult)
+
+    assert result.products == []
+    assert captured["json"]["tools"] == [  # type: ignore[index]
+        {"googleSearch": {}},
+        {"urlContext": {}},
     ]
+
+
+@pytest.mark.asyncio
+async def test_grounded_product_search_rejects_wrong_category_and_calculates_price(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SearchLLM:
+        async def search_structured(self, prompt: str, result_type: type) -> object:
+            assert "https://www.lge.co.kr/refrigerators/" in prompt
+            return result_type(
+                products=[
+                    {
+                        "name": "LG 냉장고 A",
+                        "category": "냉장고",
+                        "retail_price": 1_000_000,
+                        "product_url": "https://www.lge.co.kr/refrigerators/model-a",
+                        "usage_context": "guest_room",
+                    },
+                    {
+                        "name": "LG 에어컨 B",
+                        "category": "에어컨",
+                        "retail_price": 900_000,
+                        "product_url": "https://www.lge.co.kr/air-conditioners/model-b",
+                        "usage_context": "guest_room",
+                    },
+                ]
+            )
+
+    monkeypatch.setattr(public, "get_llm_client", lambda: SearchLLM())
+    products = await public._searched_products(
+        IntakeFields(
+            inquiry="객실 냉장고 15대 견적",
+            product="냉장고",
+            quantity=15,
+            business_type="호텔",
+        )
+    )
+
+    assert [product.name for product in products] == ["LG 냉장고 A"]
+    assert _business_estimate(float(products[0].price), 15) == (91, 910_000, 13_650_000)
 
 
 @pytest.mark.parametrize(
