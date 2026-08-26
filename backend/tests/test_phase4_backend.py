@@ -37,7 +37,13 @@ from app.routes.outbound import (
     record_actual_contact,
     stop_sequence,
 )
-from app.routes.public import _fallback_turn, _intake_complete, _public_price, _relevant_products
+from app.routes.public import (
+    _business_estimate,
+    _fallback_turn,
+    _intake_complete,
+    _public_price,
+    _relevant_products,
+)
 from app.schemas import (
     ChatMessage,
     CsvTextRequest,
@@ -45,6 +51,7 @@ from app.schemas import (
     IntakeFields,
     ManualContactRequest,
     PublicSubmissionRequest,
+    seoul_business_date,
 )
 from app.scoring import calculate_fit
 
@@ -249,6 +256,8 @@ async def test_public_product_filter_and_returning_attributes(
         price=Decimal(500000),
         usage_context="guest_room",
         is_verified=True,
+        price_source_url="https://example.test/prices/fridge",
+        price_verified_at=seoul_business_date(),
         product_url="https://example.test/fridge",
     )
     competitor = Product(
@@ -335,16 +344,18 @@ async def test_public_product_filter_and_returning_attributes(
     )
     assert [item.name for item in response.products] == [
         "객실 냉장고",
-        "타사 객실 냉장고",
         "LG 양문형 냉장고",
     ]
     assert [item.usage_label for item in response.products] == [
         "객실용",
-        "객실용",
         "공용 주방·라운지용",
     ]
-    assert all(item.price is None for item in response.products)
-    assert all(item.price_label == "사업자 가격 상담 필요" for item in response.products)
+    assert all(item.brand == "LG" for item in response.products)
+    assert response.products[0].price_label == "공식몰 참고가 500,000원"
+    assert response.products[0].estimate_rate_percent == 93
+    assert response.products[0].estimated_unit_price == 470_000
+    assert response.products[0].estimated_total_price == 2_820_000
+    assert response.products[1].price is None
     assert "객실 냉장고" in (response.analysis or "")
     assert "양문형 냉장고" in (response.analysis or "")
     assert "상업용 세탁기" not in (response.analysis or "")
@@ -538,6 +549,34 @@ def test_product_filter_handles_compound_terms_without_catalog_fallback() -> Non
         == products
     )
     assert _relevant_products(products, IntakeFields(inquiry="에어컨 문의")) == []
+
+
+def test_product_filter_excludes_other_brands_and_fills_lg_pair() -> None:
+    fridge = Product(name="LG 냉장고", brand="LG", category="냉장고", price=1, product_url="lg")
+    tv = Product(name="LG TV", brand="LG", category="TV", price=1, product_url="tv")
+    competitor = Product(
+        name="타사 냉장고", brand="Competitor", category="냉장고", price=1, product_url="other"
+    )
+    assert _relevant_products([competitor, fridge, tv], IntakeFields(inquiry="냉장고 문의")) == [
+        fridge,
+        tv,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("quantity", "rate", "unit_price"),
+    [
+        (1, 95, 1_800_000),
+        (5, 93, 1_760_000),
+        (10, 91, 1_720_000),
+        (20, 89, 1_680_000),
+        (50, 88, 1_660_000),
+    ],
+)
+def test_business_estimate_uses_quantity_tiers(
+    quantity: int, rate: int, unit_price: int
+) -> None:
+    assert _business_estimate(1_890_000, quantity) == (rate, unit_price, unit_price * quantity)
 
 
 @pytest.mark.parametrize(

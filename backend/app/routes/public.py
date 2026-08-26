@@ -1,6 +1,7 @@
 import html
 import re
 from datetime import timedelta
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Annotated, Any
 
 import httpx
@@ -53,6 +54,7 @@ PRODUCT_USAGE_LABELS = {
     "residential_large": "공용 주방·라운지용",
     "laundry_room": "세탁실용",
 }
+BUSINESS_ESTIMATE_TIERS = ((50, 88), (20, 89), (10, 91), (5, 93), (1, 95))
 
 
 class ChatAIResult(BaseModel):
@@ -63,6 +65,16 @@ class ChatAIResult(BaseModel):
 def _public_price(product: Product) -> tuple[float | None, str]:
     price, label, _, _ = trusted_public_price(product)
     return price, label
+
+
+def _business_estimate(price: float, quantity: int) -> tuple[int, int, int]:
+    rate = next(rate for minimum, rate in BUSINESS_ESTIMATE_TIERS if quantity >= minimum)
+    unit_price = int(
+        (Decimal(str(price)) * Decimal(rate) / 100).quantize(
+            Decimal("1E4"), rounding=ROUND_HALF_UP
+        )
+    )
+    return rate, unit_price, unit_price * quantity
 
 
 def _intake_complete(fields: IntakeFields) -> bool:
@@ -114,8 +126,9 @@ def _relevant_products(products: list[Product], fields: IntakeFields) -> list[Pr
     haystack = " ".join(filter(None, (fields.product, fields.inquiry))).lower()
     terms = [term for term in re.findall(r"[0-9a-z가-힣]+", haystack) if len(term) > 1]
     lodging_room_fridge = _is_lodging(fields.business_type) and "냉장고" in haystack
+    lg_products = [product for product in products if product.brand.strip().casefold() == "lg"]
     matched = []
-    for product in products:
+    for product in lg_products:
         name = product.name.lower()
         category = product.category.lower()
         if (
@@ -126,6 +139,11 @@ def _relevant_products(products: list[Product], fields: IntakeFields) -> list[Pr
             matched.append(product)
     if lodging_room_fridge:
         matched.sort(key=lambda product: product.usage_context != "guest_room")
+    if matched and len(matched) < 2:
+        for product in lg_products:
+            if product not in matched:
+                matched.append(product)
+                break
     return matched[:10]
 
 
@@ -398,6 +416,13 @@ async def submit(
     product_data: list[dict[str, Any]] = []
     for product in products:
         price, price_label, price_source_url, price_verified_at = trusted_public_price(product)
+        estimate = (
+            _business_estimate(price, fields.quantity)
+            if price is not None
+            and fields.quantity is not None
+            and product.price_type == "retail_reference"
+            else None
+        )
         product_data.append(
             {
                 "name": product.name,
@@ -408,6 +433,9 @@ async def submit(
                 "price_source_url": price_source_url,
                 "price_verified_at": price_verified_at,
                 "usage_label": PRODUCT_USAGE_LABELS.get(product.usage_context),
+                "estimate_rate_percent": estimate[0] if estimate else None,
+                "estimated_unit_price": estimate[1] if estimate else None,
+                "estimated_total_price": estimate[2] if estimate else None,
                 "product_url": product.product_url,
             }
         )

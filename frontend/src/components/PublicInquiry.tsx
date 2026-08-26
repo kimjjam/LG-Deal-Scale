@@ -20,6 +20,7 @@ const PURCHASE_TIMING_OPTIONS: Array<NonNullable<IntakeFields["purchase_timing"]
   "3개월 이내",
   "미정"
 ];
+const WON = new Intl.NumberFormat("ko-KR");
 
 const FIELD_LABELS: Array<{ key: keyof IntakeFields; label: string; suffix?: string }> = [
   { key: "business_name", label: "업체명" },
@@ -285,15 +286,15 @@ export default function PublicInquiry() {
             </section>
 
             <section className="result-section">
-              <div className="section-heading compact"><div><h3>추천 제품</h3><span>제조사 제품 페이지에 등록된 정보 기준</span></div></div>
+              <div className="section-heading compact"><div><h3>추천 제품</h3><span>LG전자 제품 페이지에 등록된 정보 기준</span></div></div>
               {result.products.length ? <div className="product-list">{result.products.map((product) => (
                 <article className="product-card" key={product.product_url}>
                   <div><span>{product.brand}{product.usage_label ? ` · ${product.usage_label}` : ""}</span><strong>{product.name}</strong></div>
-                  <div className="product-price"><strong>{product.price_label}</strong>{product.price_source_url && product.price_verified_at ? <small><a href={product.price_source_url} target="_blank" rel="noreferrer">가격 출처<span className="sr-only"> (새 창)</span></a> · {product.price_verified_at} 확인</small> : null}</div>
+                  <div className="product-price"><strong>{product.estimated_unit_price !== null ? `예상 1대당 약 ${WON.format(product.estimated_unit_price)}원` : product.price_label}</strong>{product.estimated_total_price !== null ? <span>{fields.quantity}대 예상 총액 약 {WON.format(product.estimated_total_price)}원</span> : null}{product.estimate_rate_percent !== null ? <small>{product.price_label}의 {product.estimate_rate_percent}% 기준</small> : null}{product.price_source_url && product.price_verified_at ? <small><a href={product.price_source_url} target="_blank" rel="noreferrer">가격 출처<span className="sr-only"> (새 창)</span></a> · {product.price_verified_at} 확인</small> : null}</div>
                   <a href={product.product_url} target="_blank" rel="noreferrer">제품 정보 보기<span className="sr-only"> (새 창)</span><span aria-hidden="true">↗</span></a>
                 </article>
               ))}</div> : <EmptyResult text="현재 조건에 맞는 추천 제품을 준비 중입니다." />}
-              {result.products.some((product) => product.price !== null) ? <p className="price-disclaimer">표시 가격은 제품별 단가입니다. 최종 수량별 견적, 설치·배송·할인 조건은 상담에서 확정됩니다.</p> : null}
+              {result.products.some((product) => product.price !== null) ? <p className="price-disclaimer">예상 사업자가는 검증된 공식몰 참고가에 수량별 88~95%를 적용해 1만원 단위로 반올림한 참고값입니다. 실제 견적은 설치·배송·계약 조건에 따라 달라집니다.</p> : null}
             </section>
 
             <section className="result-section">

@@ -47,6 +47,9 @@ export interface ProductRecommendation {
   price_source_url?: string | null;
   price_verified_at?: string | null;
   usage_label?: string | null;
+  estimate_rate_percent: number | null;
+  estimated_unit_price: number | null;
+  estimated_total_price: number | null;
   product_url: string;
 }
 

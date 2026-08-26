@@ -251,6 +251,9 @@ class ProductRecommendation(BaseModel):
     price_source_url: str | None = None
     price_verified_at: date | None = None
     usage_label: str | None = None
+    estimate_rate_percent: int | None = None
+    estimated_unit_price: int | None = None
+    estimated_total_price: int | None = None
     product_url: str
 
 
