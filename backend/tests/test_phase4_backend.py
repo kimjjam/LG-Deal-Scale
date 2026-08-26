@@ -566,6 +566,28 @@ def test_product_filter_never_fills_with_another_category() -> None:
     ) == "에어컨"
 
 
+def test_demo_fridges_cover_guest_room_and_large_use_with_estimates() -> None:
+    products = public._demo_products(
+        IntakeFields(product="냉장고", quantity=15, business_type="호텔")
+    )
+
+    assert [(product.name, product.usage_context) for product in products] == [
+        ("LG 일반냉장고 90L 4등급 B103S14", "guest_room"),
+        ("LG 디오스 AI 오브제컬렉션 냉장고 S834MEE111", "residential_large"),
+    ]
+    assert [_business_estimate(float(product.price), 15) for product in products] == [
+        (91, 280_000, 4_200_000),
+        (91, 1_720_000, 25_800_000),
+    ]
+    assert [
+        product.name
+        for product in public._fallback_products(
+            [Product(name="DB 냉장고", brand="LG", category="냉장고", price=1, product_url="db")],
+            IntakeFields(product="냉장고"),
+        )
+    ] == [product.name for product in products]
+
+
 @pytest.mark.asyncio
 async def test_google_search_structured_enables_search_and_url_context(
     monkeypatch: pytest.MonkeyPatch,

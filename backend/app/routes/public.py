@@ -1,6 +1,6 @@
 import html
 import re
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -64,6 +64,21 @@ OFFICIAL_PRODUCT_PATHS = {
     "세탁기": "/washing-machines/",
     "건조기": "/dryers/",
 }
+DEMO_FRIDGES = (
+    (
+        "LG 일반냉장고 90L 4등급 B103S14",
+        310_000,
+        "https://www.lge.co.kr/refrigerators/b103s14",
+        "guest_room",
+    ),
+    (
+        "LG 디오스 AI 오브제컬렉션 냉장고 S834MEE111",
+        1_890_000,
+        "https://www.lge.co.kr/refrigerators/s834mee111",
+        "residential_large",
+    ),
+)
+DEMO_PRICE_VERIFIED_AT = date(2026, 8, 26)
 
 
 class ChatAIResult(BaseModel):
@@ -231,6 +246,31 @@ LG전자 한국 공식 제품 페이지에서 현재 판매 중인 {category} �
             )
         )
     return products
+
+
+def _demo_products(fields: IntakeFields) -> list[Product]:
+    if _requested_category(fields) != "냉장고":
+        return []
+    return [
+        Product(
+            name=name,
+            brand="LG",
+            category="냉장고",
+            price=price,
+            price_type="retail_reference",
+            price_source_url=url,
+            price_verified_at=DEMO_PRICE_VERIFIED_AT,
+            usage_context=usage_context,
+            is_verified=True,
+            product_url=url,
+        )
+        for name, price, url, usage_context in DEMO_FRIDGES
+    ]
+
+
+def _fallback_products(products: list[Product], fields: IntakeFields) -> list[Product]:
+    matched = _relevant_products(products, fields)
+    return matched if len(matched) >= 2 else _demo_products(fields) or matched
 
 
 def _inquiry_content(fields: IntakeFields) -> str:
@@ -491,7 +531,7 @@ async def submit(
         )
     products = await _searched_products(fields)
     if not products:
-        products = _relevant_products(
+        products = _fallback_products(
             list(
                 (
                     await session.scalars(
